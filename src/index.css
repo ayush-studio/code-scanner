@@ -1,0 +1,71 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── Base Reset ── */
+*, *::before, *::after { box-sizing: border-box; }
+
+:root {
+  --color-primary: #7C3AED;
+  --color-secondary: #06B6D4;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+html, body, #root {
+  min-height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+/* Light Mode Defaults */
+html {
+  background-color: #f8fafc;
+  color: #0f172a;
+  color-scheme: light;
+}
+
+/* Dark Mode Overrides */
+html.dark {
+  background-color: #0A0A0F;
+  color: #f8fafc;
+  color-scheme: dark;
+}
+
+body {
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+/* ── Custom Scrollbar ── */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+
+html.dark ::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 3px;
+}
+html.dark ::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.3);
+}
+
+html:not(.dark) ::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 3px;
+}
+html:not(.dark) ::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.35);
+}
+
+/* ── Selection ── */
+::selection { background: rgba(124, 58, 237, 0.3); color: inherit; }
+
+/* ── Mermaid SVG theming ── */
+.mermaid svg,
+[id^="mermaid-"] svg {
+  background: transparent !important;
+  max-width: 100% !important;
+}
