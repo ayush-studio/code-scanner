@@ -8,6 +8,11 @@
 
 import axios from 'axios';
 import { shouldIgnoreFile } from '../utils/fileFilter';
+import { analyzeWithPython } from './pythonAnalyzeService';
+import { detectDeadCode } from '../utils/deadCodeDetector';
+import { detectDuplication } from '../utils/duplicationDetector';
+import { auditLicenses } from '../utils/licenseChecker';
+import { computeHealthScorecard } from '../utils/healthScorecard';
 
 const BATCH_SIZE = 50;
 const MAX_FILE_BYTES = 500 * 1024; // 500KB per file limit
@@ -110,5 +115,28 @@ export async function analyzeFiles(fileList, onProgress) {
     results.push(response.data);
   }
 
-  return mergeResults(results);
+  const merged = mergeResults(results);
+  merged.rawFiles = serialized;
+
+  // Run Python Deep AST & Route Scanner
+  try {
+    const pythonData = await analyzeWithPython(serialized);
+    merged.pythonAnalysis = pythonData;
+  } catch (err) {
+    console.warn('[analyzeService] Python analysis error:', err);
+  }
+
+  // Run Dead Code, Duplication, License Audit, and Scorecard
+  try {
+    merged.deadCode = detectDeadCode(serialized);
+    merged.duplication = detectDuplication(serialized);
+    merged.licenseAudit = auditLicenses(serialized);
+    merged.scorecard = computeHealthScorecard(merged);
+  } catch (err) {
+    console.warn('[analyzeService] Client audit suite error:', err);
+  }
+
+  return merged;
 }
+
+

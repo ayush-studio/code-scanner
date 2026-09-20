@@ -8,6 +8,12 @@ import ThemeToggle from '../components/ui/ThemeToggle';
 import useAnalysisStore from '../store/useAnalysisStore';
 import { analyzeFiles } from '../services/analyzeService';
 import { fetchGitHubRepo } from '../services/githubService';
+import { analyzeWithPython } from '../services/pythonAnalyzeService';
+import { detectDeadCode } from '../utils/deadCodeDetector';
+import { detectDuplication } from '../utils/duplicationDetector';
+import { auditLicenses } from '../utils/licenseChecker';
+import { computeHealthScorecard } from '../utils/healthScorecard';
+import { DEMO_PROJECTS } from '../data/demoProjects';
 import axios from 'axios';
 
 const FEATURES = [
@@ -83,7 +89,27 @@ export default function LandingPage({ onDone }) {
         headers: { 'Content-Type': 'application/json' },
         timeout: 35000,
       });
-      setResult(response.data);
+
+      const analysisData = response.data || {};
+      analysisData.rawFiles = files;
+
+      try {
+        const pythonData = await analyzeWithPython(files);
+        analysisData.pythonAnalysis = pythonData;
+      } catch (pErr) {
+        console.warn('[LandingPage] Python analysis failed:', pErr);
+      }
+
+      try {
+        analysisData.deadCode = detectDeadCode(files);
+        analysisData.duplication = detectDuplication(files);
+        analysisData.licenseAudit = auditLicenses(files);
+        analysisData.scorecard = computeHealthScorecard(analysisData);
+      } catch (cErr) {
+        console.warn('[LandingPage] Client audit suite error:', cErr);
+      }
+
+      setResult(analysisData);
       onDone?.();
     } catch (err) {
       const msg = err.response?.data?.error || err.message || 'GitHub fetch failed';
@@ -186,6 +212,43 @@ export default function LandingPage({ onDone }) {
             {status === 'error' && (
               <ErrorBanner message={errorMsg} />
             )}
+          </div>
+        </div>
+
+        {/* ── 1-Click Demo Showcase ── */}
+        <div className="mt-8">
+          <div className="flex items-center justify-between mb-3 px-1">
+            <span className="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 flex items-center gap-1.5">
+              <Zap className="w-3.5 h-3.5 text-amber-500" />
+              Try an Instant Public Demo (No Upload Needed)
+            </span>
+            <span className="text-[11px] text-slate-400">Pre-analyzed repositories</span>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            {DEMO_PROJECTS.map((demo) => (
+              <button
+                key={demo.id}
+                onClick={() => {
+                  setResult(demo.result);
+                  onDone?.();
+                }}
+                className="p-3.5 rounded-2xl border border-slate-200/80 dark:border-slate-800 bg-white/80 dark:bg-slate-900/60 hover:border-violet-500/50 hover:shadow-lg dark:hover:shadow-violet-500/10 text-left transition-all group backdrop-blur-md"
+              >
+                <div className="flex items-center justify-between mb-1.5">
+                  <span className="text-xl group-hover:scale-110 transition-transform">{demo.icon}</span>
+                  <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700">
+                    {demo.badge}
+                  </span>
+                </div>
+                <h4 className="font-bold text-xs text-slate-900 dark:text-white group-hover:text-violet-600 dark:group-hover:text-violet-400 transition-colors">
+                  {demo.title}
+                </h4>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1 line-clamp-2 leading-tight">
+                  {demo.desc}
+                </p>
+              </button>
+            ))}
           </div>
         </div>
       </section>

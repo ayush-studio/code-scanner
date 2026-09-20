@@ -1,5 +1,6 @@
 {
   "rewrites": [
+    { "source": "/api/analyze-python", "destination": "/api/analyze_python.py" },
     { "source": "/((?!api/).*)", "destination": "/index.html" }
   ]
 }
