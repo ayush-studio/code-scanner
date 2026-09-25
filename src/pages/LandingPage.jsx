@@ -1,6 +1,6 @@
 // src/pages/LandingPage.jsx
 import React, { useState, useRef } from 'react';
-import { ScanSearch, Zap, GitBranch, FolderOpen, BarChart3, Network, Layers, Shield, ChevronDown } from 'lucide-react';
+import { ScanSearch, Zap, GitBranch, FolderOpen, BarChart3, Network, Layers, Shield, ChevronDown, History, Clock, Trash2 } from 'lucide-react';
 import DropZone from '../components/scanner/DropZone';
 import GitInput from '../components/scanner/GitInput';
 import AnalysisControls from '../components/scanner/AnalysisControls';
@@ -65,7 +65,7 @@ export default function LandingPage({ onDone }) {
   const [tab, setTab] = useState('folder'); // 'folder' | 'git'
   const [localFiles, setLocalFiles] = useState([]);
 
-  const { status, setStatus, setResult, setError, errorMsg } = useAnalysisStore();
+  const { status, setStatus, setResult, setError, errorMsg, scanHistory, loadFromHistory, clearHistory } = useAnalysisStore();
   const isLoading = ['uploading', 'fetching_git', 'analyzing'].includes(status);
 
   const handleLocalAnalyze = async () => {
@@ -73,7 +73,7 @@ export default function LandingPage({ onDone }) {
     setStatus('uploading');
     try {
       const result = await analyzeFiles(localFiles);
-      setResult(result);
+      setResult(result, 'Local Folder Scan');
       onDone?.();
     } catch (err) {
       setError(err.response?.data?.error || err.message || 'Analysis failed');
@@ -109,7 +109,7 @@ export default function LandingPage({ onDone }) {
         console.warn('[LandingPage] Client audit suite error:', cErr);
       }
 
-      setResult(analysisData);
+      setResult(analysisData, url);
       onDone?.();
     } catch (err) {
       const msg = err.response?.data?.error || err.message || 'GitHub fetch failed';
@@ -214,6 +214,59 @@ export default function LandingPage({ onDone }) {
             )}
           </div>
         </div>
+
+        {/* ── Recent Scans (LocalStorage History) ── */}
+        {scanHistory && scanHistory.length > 0 && (
+          <div className="mt-8">
+            <div className="flex items-center justify-between mb-3 px-1">
+              <span className="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 flex items-center gap-1.5">
+                <History className="w-3.5 h-3.5 text-violet-500" />
+                Recent Scans (Saved Locally)
+              </span>
+              <button
+                onClick={clearHistory}
+                className="text-[11px] text-slate-400 hover:text-red-400 flex items-center gap-1 transition-colors"
+                title="Clear local history"
+              >
+                <Trash2 className="w-3 h-3" /> Clear
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+              {scanHistory.map((item, idx) => {
+                const title = item.repoUrl.replace(/^https?:\/\/github\.com\//i, '');
+                return (
+                  <button
+                    key={idx}
+                    onClick={() => {
+                      loadFromHistory(idx);
+                      onDone?.();
+                    }}
+                    className="p-3.5 rounded-2xl border border-slate-200/80 dark:border-slate-800 bg-white/80 dark:bg-slate-900/60 hover:border-violet-500/50 hover:shadow-lg dark:hover:shadow-violet-500/10 text-left transition-all group backdrop-blur-md"
+                  >
+                    <div className="flex items-center justify-between mb-1.5">
+                      <span className="font-mono text-xs font-bold text-slate-900 dark:text-white truncate max-w-[170px]" title={item.repoUrl}>
+                        {title}
+                      </span>
+                      <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-violet-500/10 text-violet-600 dark:text-violet-400 border border-violet-500/20">
+                        {item.fileCount} files
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400 mt-2">
+                      <span className="font-mono text-[10px] uppercase text-cyan-600 dark:text-cyan-400 font-semibold">
+                        {item.language}
+                      </span>
+                      <span className="flex items-center gap-1 text-[10px]">
+                        <Clock className="w-3 h-3" />
+                        {new Date(item.timestamp).toLocaleDateString()}
+                      </span>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
 
         {/* ── 1-Click Demo Showcase ── */}
         <div className="mt-8">

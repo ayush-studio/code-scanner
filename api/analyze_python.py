@@ -27,12 +27,47 @@ class PythonASTAnalyzer:
     def analyze(self):
         classes = []
         functions = []
+        comment_ratios = []
 
         for file in self.files:
             filename = file.get('name', '')
             content = file.get('content', '')
             if not content.strip():
                 continue
+
+            # ── Per-file comment ratio ──
+            lines = content.split('\n')
+            comment_count = 0
+            code_count = 0
+            in_block = False
+            for line in lines:
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                if in_block:
+                    comment_count += 1
+                    if stripped.endswith('"""') or stripped.endswith("'''"):
+                        in_block = False
+                    continue
+                if stripped.startswith('"""') or stripped.startswith("'''"):
+                    comment_count += 1
+                    # single-line docstring closes on same line
+                    rest = stripped[3:]
+                    if not (rest.endswith('"""') or rest.endswith("'''")):
+                        in_block = True
+                elif stripped.startswith('#'):
+                    comment_count += 1
+                else:
+                    code_count += 1
+            total = comment_count + code_count
+            ratio = round((comment_count / total * 100), 1) if total > 0 else 0.0
+            comment_ratios.append({
+                "file": filename,
+                "commentLines": comment_count,
+                "codeLines": code_count,
+                "commentRatio": ratio,
+                "documented": ratio >= 10,
+            })
 
             try:
                 tree = ast.parse(content, filename=filename)
@@ -61,7 +96,7 @@ class PythonASTAnalyzer:
                         "complexity": complexity
                     })
 
-        return {"classes": classes, "functions": functions}
+        return {"classes": classes, "functions": functions, "commentRatios": comment_ratios}
 
     def _calc_complexity(self, fn_node):
         """Calculate Cyclomatic Complexity for Python function node"""
@@ -205,6 +240,11 @@ class SecurityScanner:
             (r'rejectUnauthorized\s*:\s*false', 'Medium', 'Disabled SSL Certificate Validation (rejectUnauthorized: false)'),
             (r'cors\s*\(\s*\{\s*origin\s*:\s*[\'"`]\*[\'"`]\s*\}\s*\)', 'Low', 'Permissive Global CORS Config (origin: "*")'),
             (r'process\.env\.[A-Z0-9_]+', 'Info', 'Environment Variable Access'),
+            # Extended rules
+            (r'pickle\.loads?\s*\(', 'High', 'Insecure Deserialization via pickle.loads()'),
+            (r'subprocess\.(call|run|Popen)\s*\(.*shell\s*=\s*True', 'High', 'Shell Injection Risk: subprocess with shell=True'),
+            (r'DEBUG\s*=\s*True', 'Medium', 'Debug Mode Enabled (should be False in production)'),
+            (r'(?:JWT_SECRET|SECRET_KEY|PRIVATE_KEY)\s*=\s*[\'"`][^\'"` ]{8,}[\'"`]', 'High', 'Hardcoded JWT / Secret Key'),
         ]
 
         for file in self.files:

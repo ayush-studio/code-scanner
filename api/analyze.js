@@ -441,6 +441,430 @@ class LLDGenerator {
 }
 
 // ─────────────────────────────────────────────
+// STAGE 7 — JS/TS Per-File Complexity Scorer
+// Estimates file-level complexity by counting branching keywords.
+// ─────────────────────────────────────────────
+class ComplexityScanner {
+  constructor(files) { this.files = files; }
+
+  scan() {
+    const srcExts = new Set(['js', 'jsx', 'ts', 'tsx', 'mjs', 'cjs']);
+    const byFile = [];
+
+    for (const file of this.files) {
+      const ext = file.name.split('.').pop()?.toLowerCase();
+      if (!srcExts.has(ext)) continue;
+
+      // Strip comment blocks and string literals to reduce false positives
+      const content = (file.content || '')
+        .replace(/\/\/[^\n]*/g, '')
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .replace(/'[^'\\]*(?:\\.[^'\\]*)*'/g, "''")
+        .replace(/"[^"\\]*(?:\\.[^"\\]*)*"/g, '""')
+        .replace(/`[^`\\]*(?:\\.[^`\\]*)*`/g, '``');
+
+      const count = (re) => (content.match(re) || []).length;
+
+      const ifCount     = count(/\bif\s*\(/g);
+      const elseIfCount = count(/\belse\s+if\s*\(/g);
+      const forCount    = count(/\bfor\s*\(/g);
+      const whileCount  = count(/\bwhile\s*\(/g);
+      const switchCount = count(/\bswitch\s*\(/g);
+      const catchCount  = count(/\bcatch\s*[({]/g);
+      const ternary     = count(/\?(?![?.=])/g);
+      const andOp       = count(/&&/g);
+      const orOp        = count(/\|\|/g);
+
+      const complexity = 1 + ifCount + elseIfCount + forCount + whileCount +
+                         switchCount + catchCount + ternary + andOp + orOp;
+
+      byFile.push({
+        file: file.name,
+        shortName: file.name.split('/').pop(),
+        complexity,
+        breakdown: { ifCount, elseIfCount, forCount, whileCount, switchCount, catchCount, ternary, andOp, orOp },
+        severity: complexity >= 60 ? 'Critical' : complexity >= 30 ? 'High' : complexity >= 12 ? 'Medium' : 'Low',
+      });
+    }
+
+    byFile.sort((a, b) => b.complexity - a.complexity);
+
+    return {
+      byFile: byFile.slice(0, 20),
+      highComplexityCount: byFile.filter(f => f.severity === 'Critical' || f.severity === 'High').length,
+    };
+  }
+}
+
+// ─────────────────────────────────────────────
+// STAGE 8 — JS/TS Circular Dependency Detector
+// DFS cycle detection on the relative-import adjacency graph.
+// ─────────────────────────────────────────────
+class JsCircularDepDetector {
+  constructor(files) { this.files = files; }
+
+  detect() {
+    const srcExts = new Set(['js', 'jsx', 'ts', 'tsx', 'mjs', 'cjs']);
+    const sourceFiles = this.files.filter(f => srcExts.has(f.name.split('.').pop()?.toLowerCase()));
+
+    // Base-name to full path map for resolution
+    const fileBaseMap = new Map();
+    for (const f of sourceFiles) {
+      const base = f.name.split('/').pop().replace(/\.[^.]+$/, '');
+      fileBaseMap.set(base, f.name);
+    }
+
+    const importPatterns = [
+      /import\s+(?:[\w*{},\s]+\s+from\s+)?['"]([^'"]+)['"]/g,
+      /require\s*\(\s*['"]([^'"]+)['"]\s*\)/g,
+    ];
+
+    // Build adjacency list
+    const graph = new Map();
+    for (const f of sourceFiles) graph.set(f.name, []);
+
+    for (const f of sourceFiles) {
+      const fromDir = f.name.split('/').slice(0, -1).join('/');
+      for (const pat of importPatterns) {
+        const re = new RegExp(pat.source, pat.flags);
+        let m;
+        while ((m = re.exec(f.content || '')) !== null) {
+          const imp = m[1];
+          if (!imp.startsWith('.') && !imp.startsWith('/')) continue;
+          const resolved = this._resolve(fromDir, imp);
+          const base = resolved.split('/').pop().replace(/\.[^.]+$/, '');
+          const actual = fileBaseMap.get(base);
+          if (actual && actual !== f.name) graph.get(f.name).push(actual);
+        }
+      }
+      graph.set(f.name, [...new Set(graph.get(f.name))]);
+    }
+
+    // DFS cycle detection with recursion stack
+    const cycles = [];
+    const seenKeys = new Set();
+    const visited = new Set();
+    const recStack = [];
+    const recSet = new Set();
+
+    const dfs = (node) => {
+      visited.add(node);
+      recStack.push(node);
+      recSet.add(node);
+
+      for (const neighbor of graph.get(node) || []) {
+        if (!visited.has(neighbor)) {
+          dfs(neighbor);
+        } else if (recSet.has(neighbor)) {
+          const idx = recStack.indexOf(neighbor);
+          const chain = [...recStack.slice(idx), neighbor];
+          const key = chain.map(f => f.split('/').pop()).sort().join('|');
+          if (!seenKeys.has(key)) {
+            seenKeys.add(key);
+            cycles.push({
+              chain: chain.map(f => f.split('/').pop()),
+              fullPaths: chain,
+              length: chain.length - 1,
+              severity: chain.length <= 3 ? 'High' : 'Medium',
+              summary: chain.map(f => f.split('/').pop()).join(' -> '),
+            });
+          }
+        }
+      }
+
+      recStack.pop();
+      recSet.delete(node);
+    };
+
+    for (const node of graph.keys()) {
+      if (!visited.has(node)) dfs(node);
+    }
+
+    return cycles.slice(0, 10);
+  }
+
+  _resolve(fromDir, importPath) {
+    if (importPath.startsWith('/')) return importPath.slice(1);
+    const parts = (fromDir ? `${fromDir}/${importPath}` : importPath).split('/');
+    const resolved = [];
+    for (const p of parts) {
+      if (p === '..') resolved.pop();
+      else if (p !== '.') resolved.push(p);
+    }
+    return resolved.join('/');
+  }
+}
+
+// ─────────────────────────────────────────────
+// STAGE 9 — Comment-to-Code Ratio Analyzer
+// Measures documentation density across all source files.
+// ─────────────────────────────────────────────
+class CommentRatioAnalyzer {
+  constructor(files) { this.files = files; }
+
+  analyze() {
+    const srcExts = new Set(['js', 'jsx', 'ts', 'tsx', 'py', 'java', 'go', 'rs', 'cs', 'cpp', 'c', 'rb', 'php', 'kt', 'swift']);
+    const perFile = [];
+
+    for (const file of this.files) {
+      const ext = file.name.split('.').pop()?.toLowerCase();
+      if (!srcExts.has(ext)) continue;
+
+      const lines = (file.content || '').split('\n');
+      let commentLines = 0;
+      let codeLines = 0;
+      let inBlockComment = false;
+
+      for (const rawLine of lines) {
+        const line = rawLine.trim();
+        if (!line) continue;
+
+        if (inBlockComment) {
+          commentLines++;
+          if (line.includes('*/') || line.includes('"""') || line.includes("'''")) inBlockComment = false;
+          continue;
+        }
+
+        if (line.startsWith('/*') || line.startsWith('"""') || line.startsWith("'''")) {
+          commentLines++;
+          const rest = line.slice(2);
+          if (!rest.includes('*/') && !rest.includes('"""') && !rest.includes("'''")) inBlockComment = true;
+        } else if (line.startsWith('//') || line.startsWith('#') || line.startsWith('*')) {
+          commentLines++;
+        } else {
+          codeLines++;
+        }
+      }
+
+      const total = commentLines + codeLines;
+      const ratio = total > 0 ? parseFloat(((commentLines / total) * 100).toFixed(1)) : 0;
+
+      perFile.push({
+        file: file.name,
+        shortName: file.name.split('/').pop(),
+        commentLines,
+        codeLines,
+        commentRatio: ratio,
+        documented: ratio >= 10,
+      });
+    }
+
+    const poorlyDocumented = perFile
+      .filter(f => f.commentRatio < 5 && f.codeLines > 30)
+      .sort((a, b) => a.commentRatio - b.commentRatio)
+      .slice(0, 10);
+
+    const avgRatio = perFile.length > 0
+      ? parseFloat((perFile.reduce((s, f) => s + f.commentRatio, 0) / perFile.length).toFixed(1))
+      : 0;
+
+    return {
+      perFile: perFile.slice(0, 30),
+      poorlyDocumented,
+      avgRatio,
+      documentedFileCount: perFile.filter(f => f.documented).length,
+      totalAnalyzed: perFile.length,
+    };
+  }
+}
+
+// ─────────────────────────────────────────────
+// STAGE 10 — Large File / God File Detector
+// Flags source files exceeding the recommended 350-line threshold.
+// ─────────────────────────────────────────────
+class LargeFileDetector {
+  constructor(files) { this.files = files; }
+
+  detect(threshold = 350) {
+    const ignoreExts = new Set(['json', 'lock', 'md', 'yaml', 'yml', 'toml', 'txt', 'csv', 'svg', 'html', 'css', 'scss']);
+    const largeFiles = [];
+
+    for (const file of this.files) {
+      const ext = file.name.split('.').pop()?.toLowerCase();
+      if (ignoreExts.has(ext)) continue;
+
+      const loc = (file.content || '').split('\n').filter(l => l.trim().length > 0).length;
+      if (loc < threshold) continue;
+
+      largeFiles.push({
+        file: file.name,
+        shortName: file.name.split('/').pop(),
+        loc,
+        severity: loc >= 700 ? 'Critical' : loc >= 500 ? 'High' : 'Moderate',
+        warning: loc >= 700
+          ? 'Extreme God File — split urgently into focused sub-modules'
+          : loc >= 500
+          ? 'Very large — decompose into focused service classes'
+          : 'Exceeds recommended 350-line limit — consider extracting helpers',
+      });
+    }
+
+    largeFiles.sort((a, b) => b.loc - a.loc);
+    return largeFiles.slice(0, 15);
+  }
+}
+
+// ─────────────────────────────────────────────
+// STAGE 11 — Import Fan-Out / Coupling Analyzer
+// Measures outDegree (imports) and inDegree (imported-by) per JS/TS file.
+// ─────────────────────────────────────────────
+class CouplingAnalyzer {
+  constructor(files) { this.files = files; }
+
+  analyze() {
+    const srcExts = new Set(['js', 'jsx', 'ts', 'tsx', 'mjs', 'cjs']);
+    const sourceFiles = this.files.filter(f => srcExts.has(f.name.split('.').pop()?.toLowerCase()));
+
+    const fileBaseMap = new Map();
+    for (const f of sourceFiles) {
+      const base = f.name.split('/').pop().replace(/\.[^.]+$/, '');
+      fileBaseMap.set(base, f.name);
+    }
+
+    const importPatterns = [
+      /import\s+(?:[\w*{},\s]+\s+from\s+)?['"]([^'"]+)['"]/g,
+      /require\s*\(\s*['"]([^'"]+)['"]\s*\)/g,
+    ];
+
+    const outMap = new Map();
+    const inMap  = new Map();
+    for (const f of sourceFiles) {
+      outMap.set(f.name, new Set());
+      inMap.set(f.name, new Set());
+    }
+
+    for (const f of sourceFiles) {
+      const fromDir = f.name.split('/').slice(0, -1).join('/');
+      for (const pat of importPatterns) {
+        const re = new RegExp(pat.source, pat.flags);
+        let m;
+        while ((m = re.exec(f.content || '')) !== null) {
+          const imp = m[1];
+          if (!imp.startsWith('.') && !imp.startsWith('/')) continue;
+          const parts = (fromDir ? `${fromDir}/${imp}` : imp).split('/');
+          const resolved = [];
+          for (const p of parts) {
+            if (p === '..') resolved.pop();
+            else if (p !== '.') resolved.push(p);
+          }
+          const base = resolved.pop()?.replace(/\.[^.]+$/, '') || '';
+          const actual = fileBaseMap.get(base);
+          if (actual && actual !== f.name) {
+            outMap.get(f.name).add(actual);
+            inMap.get(actual)?.add(f.name);
+          }
+        }
+      }
+    }
+
+    const couplingMap = sourceFiles.map(f => {
+      const outDegree = outMap.get(f.name)?.size || 0;
+      const inDegree  = inMap.get(f.name)?.size || 0;
+      return {
+        file: f.name,
+        shortName: f.name.split('/').pop(),
+        outDegree,
+        inDegree,
+        coupled: outDegree >= 8,
+        instability: outDegree + inDegree > 0
+          ? parseFloat((outDegree / (outDegree + inDegree)).toFixed(2))
+          : 0,
+      };
+    });
+
+    couplingMap.sort((a, b) => b.outDegree - a.outDegree);
+
+    return {
+      couplingMap: couplingMap.slice(0, 25),
+      highlyCoupledCount: couplingMap.filter(f => f.coupled).length,
+    };
+  }
+}
+
+// ─────────────────────────────────────────────
+// STAGE 12 — JS/TS Security Scanner
+// Detects hardcoded secrets, unsafe patterns, and env var leakage.
+// ─────────────────────────────────────────────
+class JsSecurityScanner {
+  constructor(files) { this.files = files; }
+
+  scan() {
+    const jsExts = new Set(['js', 'jsx', 'ts', 'tsx', 'mjs', 'cjs']);
+    const issues = [];
+
+    const rules = [
+      {
+        re: /(?:api[_-]?key|secret[_-]?key|access[_-]?token|jwt[_-]?secret|client[_-]?secret|auth[_-]?token)\s*[:=]\s*['"`][A-Za-z0-9+/=_\-]{12,}['"`]/gi,
+        severity: 'High',
+        rule: 'Hardcoded API Key / Secret Token',
+      },
+      {
+        re: /(?:password|passwd|pwd)\s*[:=]\s*['"`][^'"`\s]{6,}['"`]/gi,
+        severity: 'High',
+        rule: 'Hardcoded Password Value',
+      },
+      {
+        re: /DATABASE_URL\s*[:=]\s*['"`][^'"`\s]{10,}['"`]/gi,
+        severity: 'High',
+        rule: 'Hardcoded Database Connection String',
+      },
+      {
+        re: /eval\s*\([^)]{1,200}\)/g,
+        severity: 'High',
+        rule: 'Unsafe eval() Usage',
+      },
+      {
+        re: /\.innerHTML\s*=[^=]/g,
+        severity: 'Medium',
+        rule: 'Direct innerHTML Assignment (XSS Risk)',
+      },
+      {
+        re: /dangerouslySetInnerHTML\s*=/g,
+        severity: 'Medium',
+        rule: 'dangerouslySetInnerHTML Usage (XSS Risk)',
+      },
+      {
+        re: /rejectUnauthorized\s*:\s*false/g,
+        severity: 'Medium',
+        rule: 'SSL Certificate Validation Disabled',
+      },
+      {
+        re: /cors\s*\(\s*\{\s*origin\s*:\s*['"`]\*['"`]/g,
+        severity: 'Low',
+        rule: 'Permissive CORS: origin "*"',
+      },
+      {
+        re: /localStorage\.setItem\s*\([^,]+,\s*(?:JSON\.stringify\s*\()?\s*(?:token|password|secret|key)/gi,
+        severity: 'Medium',
+        rule: 'Sensitive Data Stored in localStorage',
+      },
+    ];
+
+    for (const file of this.files) {
+      const ext = file.name.split('.').pop()?.toLowerCase();
+      if (!jsExts.has(ext)) continue;
+
+      const content = file.content || '';
+      const lines = content.split('\n');
+
+      for (const { re, severity, rule } of rules) {
+        const re2 = new RegExp(re.source, re.flags.includes('g') ? re.flags : re.flags + 'g');
+        let m;
+        while ((m = re2.exec(content)) !== null) {
+          const lineNum = content.slice(0, m.index).split('\n').length;
+          const snippet = (lines[lineNum - 1] || '').trim();
+          if (snippet.startsWith('//') || snippet.startsWith('*') || snippet.startsWith('#')) continue;
+          issues.push({ severity, rule, file: file.name, line: lineNum, snippet: snippet.slice(0, 80) });
+          if (issues.length >= 30) return issues;
+        }
+      }
+    }
+
+    return issues;
+  }
+}
+
+// ─────────────────────────────────────────────
 // STAGE 6 — Mermaid Validator
 // ─────────────────────────────────────────────
 class MermaidValidator {
@@ -508,18 +932,30 @@ export default async function handler(req, res) {
     const validator = new MermaidValidator();
 
     // Run pipeline stages
-    const metrics       = new MetricsScanner(cappedFiles).scan();
-    const requirements  = new RequirementsExtractor(cappedFiles).extract();
-    const hldRaw        = new HLDGenerator(cappedFiles).generate();
-    const lineageRaw    = new LineageGenerator(cappedFiles).generate();
-    const lldRaw        = new LLDGenerator(cappedFiles).generate();
-    const structureTree = buildStructureTree(cappedFiles);
+    const metrics           = new MetricsScanner(cappedFiles).scan();
+    const requirements      = new RequirementsExtractor(cappedFiles).extract();
+    const hldRaw            = new HLDGenerator(cappedFiles).generate();
+    const lineageRaw        = new LineageGenerator(cappedFiles).generate();
+    const lldRaw            = new LLDGenerator(cappedFiles).generate();
+    const structureTree     = buildStructureTree(cappedFiles);
+
+    // Extended zero-LLM analysis stages
+    const complexityReport  = new ComplexityScanner(cappedFiles).scan();
+    const jsCircularDeps    = new JsCircularDepDetector(cappedFiles).detect();
+    const commentRatios     = new CommentRatioAnalyzer(cappedFiles).analyze();
+    const largeFiles        = new LargeFileDetector(cappedFiles).detect();
+    const couplingData      = new CouplingAnalyzer(cappedFiles).analyze();
+    const jsSecurityIssues  = new JsSecurityScanner(cappedFiles).scan();
 
     const hld     = validator.safeValidate(hldRaw, 'hld', 'graph TD\n  A["Could not generate HLD"]');
     const lineage = validator.safeValidate(lineageRaw, 'lineage', 'graph TD\n  A["No import relationships found"]');
     const lld     = validator.safeValidate(lldRaw, 'lld', 'classDiagram\n  note "No class signatures found"');
 
-    return res.status(200).json({ metrics, requirements, hld, lld, lineage, structureTree });
+    return res.status(200).json({
+      metrics, requirements, hld, lld, lineage, structureTree,
+      complexityReport, jsCircularDeps, commentRatios,
+      largeFiles, couplingData, jsSecurityIssues,
+    });
   } catch (err) {
     console.error('[analyze] Error:', err);
     return res.status(500).json({ error: 'Internal analysis error', details: err.message });

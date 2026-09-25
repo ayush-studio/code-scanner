@@ -131,7 +131,14 @@ export async function analyzeFiles(fileList, onProgress) {
     merged.deadCode = detectDeadCode(serialized);
     merged.duplication = detectDuplication(serialized);
     merged.licenseAudit = auditLicenses(serialized);
-    merged.scorecard = computeHealthScorecard(merged);
+
+    // Recompute scorecard with ALL data now available (including new JS analysis fields)
+    merged.scorecard = computeHealthScorecard({
+      ...merged,
+      jsSecurityIssues: merged.jsSecurityIssues || [],
+      complexityReport: merged.complexityReport || {},
+      couplingData: merged.couplingData || {},
+    });
   } catch (err) {
     console.warn('[analyzeService] Client audit suite error:', err);
   }

@@ -2,7 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import {
   ArrowLeft, ScanSearch, Network, Layers, GitBranch, Server,
-  ShieldAlert, Award, Copy, LayoutDashboard, Search, FileCode, Flame, Bug
+  ShieldAlert, Award, Copy, LayoutDashboard, Search, FileCode, Flame, Bug, AlertTriangle, Wifi
 } from 'lucide-react';
 import useAnalysisStore from '../store/useAnalysisStore';
 import MetricsTable from '../components/dashboard/MetricsTable';
@@ -18,6 +18,9 @@ import InteractiveGraphCanvas from '../components/dashboard/InteractiveGraphCanv
 import RefactorHotspotCard from '../components/dashboard/RefactorHotspotCard';
 import CommandPaletteModal from '../components/dashboard/CommandPaletteModal';
 import FileRelationshipExplorer from '../components/dashboard/FileRelationshipExplorer';
+import ComplexityReportCard from '../components/dashboard/ComplexityReportCard';
+import GodFilesCard from '../components/dashboard/GodFilesCard';
+import CommentRatioCard from '../components/dashboard/CommentRatioCard';
 import ThemeToggle from '../components/ui/ThemeToggle';
 import SkeletonCard, { SkeletonDiagram } from '../components/ui/SkeletonCard';
 
@@ -45,6 +48,20 @@ export default function DashboardPage({ onBack }) {
 
   const isAnalyzing = status === 'analyzing' || status === 'uploading' || status === 'fetching_git';
   const pythonAnalysis = result?.pythonAnalysis || {};
+  const rateLimit = result?.rateLimit || null;
+  const sectionIds = SECTIONS.map(s => s.id);
+
+  // Keyboard shortcuts: 1–5 switch sections, Ctrl+K opens palette
+  useEffect(() => {
+    const handler = (e) => {
+      if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+      if (e.ctrlKey && e.key === 'k') { e.preventDefault(); setIsPaletteOpen(true); return; }
+      const idx = parseInt(e.key, 10) - 1;
+      if (idx >= 0 && idx < sectionIds.length) setActiveSection(sectionIds[idx]);
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [sectionIds]);
 
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-[#0A0A0F] text-slate-900 dark:text-white transition-colors duration-300">
@@ -120,6 +137,17 @@ export default function DashboardPage({ onBack }) {
       {/* ── Main Content ── */}
       <main className="relative z-10 max-w-7xl mx-auto px-6 py-8 space-y-8">
 
+        {/* ── GitHub Rate Limit Banner ── */}
+        {rateLimit && rateLimit.remaining < 10 && (
+          <div className="flex items-center gap-3 px-4 py-3 rounded-xl border border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300 text-xs font-medium mb-0">
+            <Wifi className="w-4 h-4 shrink-0" />
+            <span>
+              GitHub API rate limit low: <strong>{rateLimit.remaining}</strong> requests remaining.
+              Resets at {new Date(rateLimit.resetAt).toLocaleTimeString()}. Add a Personal Access Token to increase limits.
+            </span>
+          </div>
+        )}
+
         {/* ── TAB 1: OVERVIEW ── */}
         {activeSection === 'overview' && (
           <div className="space-y-8">
@@ -130,6 +158,15 @@ export default function DashboardPage({ onBack }) {
 
             {/* Refactor Hotspots */}
             <RefactorHotspotCard hotspots={pythonAnalysis.hotspots || []} />
+
+            {/* God Files + Comment Ratio */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              <GodFilesCard
+                largeFiles={result?.largeFiles || []}
+                onSelectFile={(f) => { setSelectedLineageFile(f); setActiveSection('architecture'); }}
+              />
+              <CommentRatioCard commentRatios={result?.commentRatios || {}} />
+            </div>
 
             {/* Metrics + Requirements */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -154,6 +191,7 @@ export default function DashboardPage({ onBack }) {
                 files={result.rawFiles}
                 selectedFile={selectedLineageFile}
                 onSelectFile={(f) => setSelectedLineageFile(f)}
+                couplingData={result?.couplingData || {}}
               />
             )}
 
@@ -212,11 +250,23 @@ export default function DashboardPage({ onBack }) {
         {/* ── TAB 4: CODE HEALTH & QUALITY ── */}
         {activeSection === 'health' && (
           <div className="space-y-8">
-            {/* Anti-Patterns, Circular Dependencies, Security, & AST Complexity */}
+            {/* JS/TS Complexity Report — top of the section */}
+            <ComplexityReportCard
+              complexityReport={result?.complexityReport || {}}
+              couplingData={result?.couplingData || {}}
+            />
+
+            {/* Anti-Patterns, Circular Dependencies, Security, & Python AST Complexity */}
             <ComplexityCard
-              securityIssues={pythonAnalysis.securityIssues || []}
+              securityIssues={[
+                ...(pythonAnalysis.securityIssues || []),
+                ...(result?.jsSecurityIssues || []),
+              ]}
               antiPatterns={pythonAnalysis.antiPatterns || []}
-              circularDependencies={pythonAnalysis.circularDependencies || []}
+              circularDependencies={[
+                ...(pythonAnalysis.circularDependencies || []),
+                ...(result?.jsCircularDeps || []),
+              ]}
               pythonAST={pythonAnalysis.pythonAST || { classes: [], functions: [] }}
               totalPythonFiles={pythonAnalysis.totalPythonFiles || 0}
             />

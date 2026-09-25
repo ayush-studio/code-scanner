@@ -12,6 +12,11 @@
 const MAX_FILES = 250;
 const MAX_TOTAL_BYTES = 8 * 1024 * 1024; // 8MB
 
+// ── In-memory LRU cache (process lifetime, dev server only) ──
+// Key: "owner/repo@sha"  →  Value: { files, cachedAt }
+const MAX_CACHE_SIZE = 10;
+const repoCache = new Map();
+
 const IGNORED_DIRS = new Set([
   '.git', 'node_modules', 'dist', 'build', '.next', 'out', 'coverage',
   '.venv', 'venv', '__pycache__', '.idea', '.vscode', '.turbo', '.cache',
@@ -54,6 +59,13 @@ async function fetchFileTree(owner, repo, branch, headers) {
   const url = `https://api.github.com/repos/${owner}/${repo}/git/trees/${branch}?recursive=1`;
   const response = await fetch(url, { headers });
 
+  // Extract rate limit metadata for UI banner
+  const rateLimit = {
+    remaining: parseInt(response.headers.get('X-RateLimit-Remaining') ?? '60', 10),
+    limit: parseInt(response.headers.get('X-RateLimit-Limit') ?? '60', 10),
+    resetAt: new Date(parseInt(response.headers.get('X-RateLimit-Reset') ?? '0', 10) * 1000).toISOString(),
+  };
+
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));
     if (response.status === 404) throw new Error('Repository not found. Check URL or private access token.');
@@ -66,7 +78,7 @@ async function fetchFileTree(owner, repo, branch, headers) {
     throw { code: 413, message: 'Repository is too large for GitHub API tree fetch. Please download/clone locally and use folder upload.' };
   }
 
-  return data.tree || [];
+  return { tree: data.tree || [], rateLimit };
 }
 
 async function fetchFileContent(owner, repo, fileSha, headers) {
@@ -101,19 +113,35 @@ export default async function handler(req, res) {
 
     const { owner, repo, branch } = parseGitHubUrl(repoUrl);
 
-    let tree;
+    let tree, rateLimit;
     try {
-      tree = await fetchFileTree(owner, repo, branch, headers);
+      ({ tree, rateLimit } = await fetchFileTree(owner, repo, branch, headers));
     } catch (err) {
       if (err.code === 413) return res.status(413).json({ error: err.message });
       throw err;
+    }
+
+    // Derive cache key from first blob SHA (stable per-commit)
+    const firstBlobSha = tree.find(i => i.type === 'blob')?.sha || '';
+    const cacheKey = `${owner}/${repo}@${firstBlobSha}`;
+    const CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+
+    // ── Cache hit ──
+    const cached = repoCache.get(cacheKey);
+    if (cached && Date.now() - cached.cachedAt < CACHE_TTL_MS) {
+      return res.status(200).json({
+        files: cached.files,
+        totalFetched: cached.files.length,
+        totalInRepo: tree.length,
+        rateLimit,
+        fromCache: true,
+      });
     }
 
     // Filter out ignored paths, non-blobs
     const validBlobs = tree.filter(item => item.type === 'blob' && !shouldIgnorePath(item.path));
 
     if (validBlobs.length > MAX_FILES) {
-      // Pick top MAX_FILES source files
       validBlobs.length = MAX_FILES;
     }
 
@@ -138,7 +166,14 @@ export default async function handler(req, res) {
       return res.status(422).json({ error: 'No readable source files found in repository.' });
     }
 
-    return res.status(200).json({ files, totalFetched: files.length, totalInRepo: tree.length });
+    // ── Store in LRU cache (evict oldest if full) ──
+    if (repoCache.size >= MAX_CACHE_SIZE) {
+      const oldestKey = repoCache.keys().next().value;
+      repoCache.delete(oldestKey);
+    }
+    repoCache.set(cacheKey, { files, cachedAt: Date.now() });
+
+    return res.status(200).json({ files, totalFetched: files.length, totalInRepo: tree.length, rateLimit, fromCache: false });
 
   } catch (err) {
     console.error('[fetch-github] Error:', err);

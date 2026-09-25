@@ -135,6 +135,49 @@ function runLocalJsFallback(files) {
     .sort((a, b) => b.riskScore - a.riskScore)
     .slice(0, 6);
 
+  // ── New fields: complexity, large files, comment ratio, coupling ──
+  const jsExts = new Set(['js', 'jsx', 'ts', 'tsx', 'mjs', 'cjs']);
+
+  const complexityByFile = files
+    .filter(f => jsExts.has(f.name?.split('.').pop()?.toLowerCase()))
+    .map(f => {
+      const c = (f.content || '');
+      const count = (re) => (c.match(re) || []).length;
+      const complexity = 1 + count(/\bif\s*\(/g) + count(/\bfor\s*\(/g) + count(/\bwhile\s*\(/g) +
+                         count(/\bswitch\s*\(/g) + count(/\bcatch\s*[({]/g) + count(/&&/g) + count(/\|\|/g);
+      return {
+        file: f.name,
+        shortName: (f.name || '').split('/').pop(),
+        complexity,
+        severity: complexity >= 60 ? 'Critical' : complexity >= 30 ? 'High' : complexity >= 12 ? 'Medium' : 'Low',
+      };
+    })
+    .sort((a, b) => b.complexity - a.complexity);
+
+  const largeFiles = files
+    .filter(f => {
+      const ext = f.name?.split('.').pop()?.toLowerCase();
+      const ignoreExts = new Set(['json', 'lock', 'md', 'yaml', 'yml', 'toml', 'svg', 'css']);
+      return !ignoreExts.has(ext);
+    })
+    .map(f => ({ file: f.name, shortName: (f.name || '').split('/').pop(), loc: (f.content || '').split('\n').filter(l => l.trim()).length }))
+    .filter(f => f.loc >= 350)
+    .sort((a, b) => b.loc - a.loc)
+    .slice(0, 10)
+    .map(f => ({
+      ...f,
+      severity: f.loc >= 700 ? 'Critical' : f.loc >= 500 ? 'High' : 'Moderate',
+      warning: f.loc >= 700 ? 'Extreme God File — split urgently' : 'Exceeds 350-line limit',
+    }));
+
+  const commentRatiosPerFile = files.map(f => {
+    const lines = (f.content || '').split('\n');
+    const commentLines = lines.filter(l => l.trim().startsWith('//') || l.trim().startsWith('#') || l.trim().startsWith('*')).length;
+    const codeLines = lines.filter(l => l.trim() && !l.trim().startsWith('//') && !l.trim().startsWith('#') && !l.trim().startsWith('*')).length;
+    const total = commentLines + codeLines;
+    return { file: f.name, shortName: (f.name || '').split('/').pop(), commentLines, codeLines, commentRatio: total > 0 ? parseFloat(((commentLines / total) * 100).toFixed(1)) : 0, documented: false };
+  });
+
   // Topology diagram
   const lines = ['graph LR', '  Client["🌐 Client App"]'];
   routes.slice(0, 10).forEach((r, idx) => {
@@ -147,7 +190,7 @@ function runLocalJsFallback(files) {
   });
 
   return {
-    pythonAST: { classes: [], functions: [] },
+    pythonAST: { classes: [], functions: [], commentRatios: [] },
     apiRoutes: routes,
     databaseSchemas: schemas,
     securityIssues: security,
@@ -155,7 +198,14 @@ function runLocalJsFallback(files) {
     circularDependencies: [],
     hotspots,
     apiTopologyDiagram: lines.join('\n'),
-    totalPythonFiles: files.filter(f => f.name?.endsWith('.py')).length
+    totalPythonFiles: files.filter(f => f.name?.endsWith('.py')).length,
+    // New fields
+    complexityReport: { byFile: complexityByFile.slice(0, 20), highComplexityCount: complexityByFile.filter(f => f.severity === 'Critical' || f.severity === 'High').length },
+    jsCircularDeps: [],
+    commentRatios: { perFile: commentRatiosPerFile.slice(0, 30), poorlyDocumented: commentRatiosPerFile.filter(f => f.commentRatio < 5).slice(0, 10), avgRatio: 0, documentedFileCount: 0, totalAnalyzed: commentRatiosPerFile.length },
+    largeFiles,
+    couplingData: { couplingMap: [], highlyCoupledCount: 0 },
+    jsSecurityIssues: security,
   };
 }
 

@@ -2,6 +2,14 @@
 import React, { useState, useEffect } from 'react';
 import { Search, File, Server, ShieldAlert, X, CornerDownLeft, Code } from 'lucide-react';
 
+const SECTIONS = [
+  { num: '1', label: '📊 Overview & Health', sec: 'overview' },
+  { num: '2', label: '🗺️ Architecture Diagrams', sec: 'architecture' },
+  { num: '3', label: '⚡ API Routes & Models', sec: 'api' },
+  { num: '4', label: '🛡️ Code Quality & Smells', sec: 'health' },
+  { num: '5', label: '📂 File Structure Explorer', sec: 'explorer' },
+];
+
 export default function CommandPaletteModal({ isOpen, onClose, result, onSelectSection }) {
   const [query, setQuery] = useState('');
 
@@ -9,21 +17,30 @@ export default function CommandPaletteModal({ isOpen, onClose, result, onSelectS
     const handleKeyDown = (e) => {
       if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
         e.preventDefault();
-        if (isOpen) onClose();
-        else onClose(false); // toggle trigger
+        onClose();
       } else if (e.key === 'Escape' && isOpen) {
         onClose();
+      } else if (isOpen && !query.trim()) {
+        const found = SECTIONS.find(s => s.num === e.key);
+        if (found) {
+          e.preventDefault();
+          onSelectSection?.(found.sec);
+          onClose();
+        }
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isOpen, onClose]);
+  }, [isOpen, onClose, onSelectSection, query]);
 
   if (!isOpen) return null;
 
   const rawFiles = result?.rawFiles || [];
   const routes = result?.pythonAnalysis?.apiRoutes || [];
-  const security = result?.pythonAnalysis?.securityIssues || [];
+  const security = [
+    ...(result?.pythonAnalysis?.securityIssues || []),
+    ...(result?.jsSecurityIssues || []),
+  ];
   const functions = result?.pythonAnalysis?.pythonAST?.functions || [];
 
   const lowerQuery = query.toLowerCase().trim();
@@ -73,23 +90,23 @@ export default function CommandPaletteModal({ isOpen, onClose, result, onSelectS
           {/* Quick Section Shortcuts */}
           {!query && (
             <div>
-              <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 px-2 mb-1.5">
-                Quick Jump To Section
+              <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 px-2 mb-1.5 flex items-center justify-between">
+                <span>Quick Jump To Section</span>
+                <span className="font-mono text-slate-500">Press 1–5</span>
               </div>
-              <div className="grid grid-cols-2 gap-1.5">
-                {[
-                  { label: '📊 Overview & Health', sec: 'overview' },
-                  { label: '🗺️ Architecture Diagrams', sec: 'architecture' },
-                  { label: '⚡ API Routes & Models', sec: 'api' },
-                  { label: '🛡️ Code Quality & Smells', sec: 'health' },
-                  { label: '📂 File Structure Explorer', sec: 'explorer' },
-                ].map((s, i) => (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                {SECTIONS.map((s) => (
                   <button
-                    key={i}
+                    key={s.sec}
                     onClick={() => handleSelect(s.sec)}
                     className="flex items-center justify-between p-2 rounded-lg bg-slate-100 dark:bg-slate-800/60 hover:bg-violet-500/10 hover:text-violet-600 dark:hover:text-violet-400 text-left transition-colors text-slate-700 dark:text-slate-300 font-medium"
                   >
-                    <span>{s.label}</span>
+                    <span className="flex items-center gap-2">
+                      <kbd className="w-4 h-4 flex items-center justify-center rounded bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 text-[10px] font-mono text-slate-500 dark:text-slate-300">
+                        {s.num}
+                      </kbd>
+                      {s.label}
+                    </span>
                     <CornerDownLeft className="w-3 h-3 text-slate-400" />
                   </button>
                 ))}
@@ -199,7 +216,11 @@ export default function CommandPaletteModal({ isOpen, onClose, result, onSelectS
 
         {/* Footer */}
         <div className="p-2.5 bg-slate-50 dark:bg-slate-950/80 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between text-[11px] text-slate-400 px-4">
-          <span>Navigate with mouse or arrow keys</span>
+          <div className="flex items-center gap-2">
+            <span className="hidden sm:inline">Navigate:</span>
+            <kbd className="px-1.5 py-0.5 rounded bg-slate-200 dark:bg-slate-800 text-[10px] font-mono">1–5</kbd>
+            <span className="text-[10px]">Jump section</span>
+          </div>
           <div className="flex items-center gap-1">
             <kbd className="px-1.5 py-0.5 rounded bg-slate-200 dark:bg-slate-800 text-[10px] font-mono">ESC</kbd> to close
           </div>

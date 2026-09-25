@@ -6,6 +6,36 @@ import useAnalysisStore from '../../store/useAnalysisStore';
 
 let renderCounter = 0;
 
+// Strips emoji from Mermaid node labels — Mermaid v12 renders inconsistently with emoji in some paths
+function sanitizeForMermaid(src) {
+  if (!src) return src;
+  return src
+    .replace(/🎯/g, '[TARGET]')
+    .replace(/📥/g, '[IN]')
+    .replace(/📤/g, '[OUT]')
+    .replace(/🗄️/g, '[DB]')
+    .replace(/🌐/g, '[CLIENT]')
+    .replace(/⚡/g, '[API]')
+    .replace(/📁/g, '[DIR]')
+    .replace(/📄/g, '[FILE]')
+    .replace(/🔧/g, '[SRC]')
+    .replace(/🧩/g, '[COMP]')
+    .replace(/📦/g, '[PKG]')
+    .replace(/🔌/g, '[SVC]')
+    .replace(/🎨/g, '[STYLE]')
+    .replace(/🖼/g, '[ASSET]')
+    .replace(/🧪/g, '[TEST]')
+    .replace(/📚/g, '[LIB]')
+    .replace(/🛠/g, '[UTIL]')
+    .replace(/🖥/g, '[SERVER]')
+    .replace(/📱/g, '[CLIENT]')
+    .replace(/⚙/g, '[CONFIG]')
+    // Catch any remaining emoji in supplementary planes
+    .replace(/[\u{1F300}-\u{1FAFF}]/gu, '')
+    .replace(/[\u2600-\u26FF]/g, '')
+    .replace(/[\u2700-\u27BF]/g, '');
+}
+
 export default function MermaidRenderer({ diagram, title = 'Diagram' }) {
   const containerRef = useRef(null);
   const modalContainerRef = useRef(null);
@@ -19,6 +49,7 @@ export default function MermaidRenderer({ diagram, title = 'Diagram' }) {
   const [offset, setOffset] = useState({ x: 0, y: 0 });
   const isPanning = useRef(false);
   const lastPos = useRef({ x: 0, y: 0 });
+
 
   const isDark = theme === 'dark';
 
@@ -68,8 +99,9 @@ export default function MermaidRenderer({ diagram, title = 'Diagram' }) {
     });
 
     const renderId = `mermaid-${++renderCounter}`;
+    const safeDiagram = sanitizeForMermaid(diagram);
 
-    mermaid.render(renderId, diagram)
+    mermaid.render(renderId, safeDiagram)
       .then(({ svg }) => {
         if (containerRef.current) {
           containerRef.current.innerHTML = svg;

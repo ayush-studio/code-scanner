@@ -1,14 +1,23 @@
 // src/components/dashboard/FileRelationshipExplorer.jsx
-import React, { useState, useMemo } from 'react';
-import { Network, Search, ArrowRight, ArrowLeft, ShieldAlert, CheckCircle, FileCode, Layers, Filter } from 'lucide-react';
+import React, { useState, useMemo, useEffect } from 'react';
+import {
+  Network, Search, ArrowRight, ArrowLeft, ShieldAlert, CheckCircle,
+  FileCode, Layers, Filter, X, Info, ExternalLink, Zap
+} from 'lucide-react';
 import Card, { CardHeader, CardBody } from '../ui/Card';
 import Badge from '../ui/Badge';
 import MermaidRenderer from './MermaidRenderer';
 
-export default function FileRelationshipExplorer({ files = [], selectedFile: externalSelectedFile, onSelectFile }) {
+export default function FileRelationshipExplorer({
+  files = [],
+  selectedFile: externalSelectedFile,
+  onSelectFile,
+  couplingData = {}
+}) {
   const [internalSelectedFile, setInternalSelectedFile] = useState('');
   const [search, setSearch] = useState('');
   const [hopDepth, setHopDepth] = useState(1); // 1-hop or 2-hop
+  const [drawerFile, setDrawerFile] = useState(null); // per-file detail drawer
 
   const activeFile = externalSelectedFile || internalSelectedFile || (files[0]?.name || '');
 
@@ -43,7 +52,57 @@ export default function FileRelationshipExplorer({ files = [], selectedFile: ext
     return { dependencyMap: depMap, consumerMap: consMap, fileList: allFiles };
   }, [files]);
 
-  // ── Calculate Direct & Cascading Relationships ──
+  // Search filter for dropdown & file list
+  const filteredFiles = useMemo(() => {
+    if (!search.trim()) return fileList;
+    return fileList.filter(f => f.toLowerCase().includes(search.toLowerCase()));
+  }, [fileList, search]);
+
+  // Fix: Auto-select single match or first match when searching
+  useEffect(() => {
+    if (search.trim() && filteredFiles.length > 0 && !filteredFiles.includes(activeFile)) {
+      const first = filteredFiles[0];
+      setInternalSelectedFile(first);
+      onSelectFile?.(first);
+    }
+  }, [search, filteredFiles, activeFile, onSelectFile]);
+
+  // ── Helper to calculate blast radius for any file ──
+  const getFileBlastRadius = (filename) => {
+    const directCons = consumerMap.get(filename) || [];
+    const directDeps = dependencyMap.get(filename) || [];
+    const totalImpact = directCons.length;
+
+    if (totalImpact >= 6) {
+      return {
+        level: 'Critical',
+        color: 'red',
+        role: 'Core Anchor File',
+        desc: `High blast radius (${totalImpact} dependents). Significant refactoring risk.`,
+        directCons,
+        directDeps
+      };
+    } else if (totalImpact >= 2) {
+      return {
+        level: 'Moderate',
+        color: 'yellow',
+        role: 'Intermediate Service Module',
+        desc: `Moderate impact (${totalImpact} dependents). Test connected consumers when editing.`,
+        directCons,
+        directDeps
+      };
+    }
+    return {
+      level: 'Low',
+      color: 'green',
+      role: 'Leaf Component / Utility',
+      desc: 'Minimal architectural impact. Safe to modify or refactor.',
+      directCons,
+      directDeps
+    };
+  };
+
+  // ── Calculate Direct & Cascading Relationships for Active File ──
   const relationships = useMemo(() => {
     if (!activeFile) return null;
 
@@ -62,30 +121,7 @@ export default function FileRelationshipExplorer({ files = [], selectedFile: ext
       }
     }
 
-    // Blast Radius Assessment
-    const totalImpactCount = directConsumers.length + secondaryConsumers.size;
-    let blastRadius = {
-      level: 'Low',
-      color: 'green',
-      role: 'Leaf Component / Utility',
-      desc: 'Minimal architectural impact. Safe to modify or refactor.'
-    };
-
-    if (totalImpactCount >= 6) {
-      blastRadius = {
-        level: 'Critical',
-        color: 'red',
-        role: 'Core Anchor File',
-        desc: `High blast radius (${totalImpactCount} downstream dependents). Modifying may cause widespread breaking changes.`
-      };
-    } else if (totalImpactCount >= 2) {
-      blastRadius = {
-        level: 'Moderate',
-        color: 'yellow',
-        role: 'Intermediate Service Module',
-        desc: `Moderate impact (${totalImpactCount} downstream dependents). Test connected consumers when editing.`
-      };
-    }
+    const blastRadius = getFileBlastRadius(activeFile);
 
     // ── Generate Isolated Subgraph Mermaid ──
     const cleanId = (name) => name.replace(/[^a-zA-Z0-9]/g, '_');
@@ -93,16 +129,15 @@ export default function FileRelationshipExplorer({ files = [], selectedFile: ext
     const mermaidLines = ['graph LR'];
 
     // Target Node
-    mermaidLines.push(`  TARGET["🎯 ${activeShort}"]:::targetNode`);
+    mermaidLines.push(`  TARGET["${activeShort}"]:::targetNode`);
 
     // Inbound Consumers
     if (directConsumers.length === 0) {
       mermaidLines.push('  NO_CONS["(No Inbound Consumers)"]:::mutedNode -.-> TARGET');
     } else {
       directConsumers.slice(0, 8).forEach((c, idx) => {
-        const cId = cleanId(c);
         const cShort = c.split('/').pop();
-        mermaidLines.push(`  C_${idx}["📥 ${cShort}"]:::consumerNode --> TARGET`);
+        mermaidLines.push(`  C_${idx}["[IN] ${cShort}"]:::consumerNode --> TARGET`);
       });
     }
 
@@ -111,9 +146,8 @@ export default function FileRelationshipExplorer({ files = [], selectedFile: ext
       mermaidLines.push('  TARGET -.-> NO_DEPS["(No Local Dependencies)"]:::mutedNode');
     } else {
       directDependencies.slice(0, 8).forEach((d, idx) => {
-        const dId = cleanId(d);
         const dShort = d.split('/').pop();
-        mermaidLines.push(`  TARGET --> D_${idx}["📤 ${dShort}"]:::depNode`);
+        mermaidLines.push(`  TARGET --> D_${idx}["[OUT] ${dShort}"]:::depNode`);
       });
     }
 
@@ -131,17 +165,30 @@ export default function FileRelationshipExplorer({ files = [], selectedFile: ext
     };
   }, [activeFile, consumerMap, dependencyMap, hopDepth]);
 
-  const filteredFiles = fileList.filter(f =>
-    f.toLowerCase().includes(search.toLowerCase())
-  );
-
   const handleSelect = (file) => {
     setInternalSelectedFile(file);
     onSelectFile?.(file);
   };
 
+  // Lookup coupling info for drawer file
+  const couplingMap = couplingData?.couplingMap || [];
+  const drawerCoupling = useMemo(() => {
+    if (!drawerFile) return null;
+    return couplingMap.find(c => c.file === drawerFile);
+  }, [drawerFile, couplingMap]);
+
+  // Lookup raw file content for LOC & stats
+  const drawerRawFile = useMemo(() => {
+    if (!drawerFile) return null;
+    return files.find(f => f.name === drawerFile);
+  }, [drawerFile, files]);
+
+  const drawerLoc = drawerRawFile?.content ? drawerRawFile.content.split('\n').length : 0;
+  const drawerExt = drawerFile ? drawerFile.split('.').pop() : '';
+  const drawerBlast = drawerFile ? getFileBlastRadius(drawerFile) : null;
+
   return (
-    <Card glow className="overflow-hidden">
+    <Card glow className="overflow-hidden relative">
       <CardHeader>
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
           <div className="flex items-center gap-2.5">
@@ -193,6 +240,11 @@ export default function FileRelationshipExplorer({ files = [], selectedFile: ext
               placeholder="Search file to inspect relationships..."
               className="w-full bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl pl-9 pr-4 py-2 text-xs text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-violet-500 font-mono"
             />
+            {search && (
+              <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[10px] font-mono text-slate-400">
+                {filteredFiles.length} match{filteredFiles.length !== 1 ? 'es' : ''}
+              </span>
+            )}
           </div>
 
           <select
@@ -224,6 +276,12 @@ export default function FileRelationshipExplorer({ files = [], selectedFile: ext
                     <Badge color={relationships.blastRadius.color}>
                       {relationships.blastRadius.level} Risk
                     </Badge>
+                    <button
+                      onClick={() => setDrawerFile(activeFile)}
+                      className="text-[10px] text-violet-500 hover:text-violet-400 hover:underline flex items-center gap-1 font-sans"
+                    >
+                      <Info className="w-3 h-3" /> View details
+                    </button>
                   </div>
                   <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
                     Role: <strong className="text-slate-700 dark:text-slate-300">{relationships.blastRadius.role}</strong> — {relationships.blastRadius.desc}
@@ -271,15 +329,35 @@ export default function FileRelationshipExplorer({ files = [], selectedFile: ext
                 {relationships.directConsumers.length === 0 ? (
                   <p className="text-xs text-slate-500 py-2">No other files import this module directly.</p>
                 ) : (
-                  <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
+                  <div className="space-y-1.5 max-h-56 overflow-y-auto pr-1">
                     {relationships.directConsumers.map((c, i) => (
                       <div
                         key={i}
-                        onClick={() => handleSelect(c)}
-                        className="p-2 rounded-lg bg-white dark:bg-slate-950 border border-slate-200/80 dark:border-slate-800 text-xs font-mono text-slate-700 dark:text-slate-300 hover:border-emerald-500/50 cursor-pointer flex items-center justify-between truncate"
+                        className="group p-2 rounded-lg bg-white dark:bg-slate-950 border border-slate-200/80 dark:border-slate-800 text-xs font-mono text-slate-700 dark:text-slate-300 hover:border-emerald-500/50 transition-all flex items-center justify-between gap-2"
                       >
-                        <span className="truncate">{c}</span>
-                        <ArrowRight className="w-3 h-3 text-slate-400 shrink-0 ml-1" />
+                        <span
+                          onClick={() => handleSelect(c)}
+                          className="truncate cursor-pointer hover:text-emerald-500 flex-1"
+                          title={c}
+                        >
+                          {c}
+                        </span>
+                        <div className="flex items-center gap-1 shrink-0">
+                          <button
+                            onClick={() => setDrawerFile(c)}
+                            title="Inspect file details"
+                            className="p-1 rounded text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800"
+                          >
+                            <Info className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            onClick={() => handleSelect(c)}
+                            title="Switch lineage to this file"
+                            className="p-1 rounded text-slate-400 hover:text-emerald-500 hover:bg-emerald-500/10"
+                          >
+                            <ArrowRight className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -299,20 +377,159 @@ export default function FileRelationshipExplorer({ files = [], selectedFile: ext
                 {relationships.directDependencies.length === 0 ? (
                   <p className="text-xs text-slate-500 py-2">No internal local modules imported.</p>
                 ) : (
-                  <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
+                  <div className="space-y-1.5 max-h-56 overflow-y-auto pr-1">
                     {relationships.directDependencies.map((d, i) => (
                       <div
                         key={i}
-                        onClick={() => handleSelect(d)}
-                        className="p-2 rounded-lg bg-white dark:bg-slate-950 border border-slate-200/80 dark:border-slate-800 text-xs font-mono text-slate-700 dark:text-slate-300 hover:border-cyan-500/50 cursor-pointer flex items-center justify-between truncate"
+                        className="group p-2 rounded-lg bg-white dark:bg-slate-950 border border-slate-200/80 dark:border-slate-800 text-xs font-mono text-slate-700 dark:text-slate-300 hover:border-cyan-500/50 transition-all flex items-center justify-between gap-2"
                       >
-                        <span className="truncate">{d}</span>
-                        <ArrowRight className="w-3 h-3 text-slate-400 shrink-0 ml-1" />
+                        <span
+                          onClick={() => handleSelect(d)}
+                          className="truncate cursor-pointer hover:text-cyan-500 flex-1"
+                          title={d}
+                        >
+                          {d}
+                        </span>
+                        <div className="flex items-center gap-1 shrink-0">
+                          <button
+                            onClick={() => setDrawerFile(d)}
+                            title="Inspect file details"
+                            className="p-1 rounded text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800"
+                          >
+                            <Info className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            onClick={() => handleSelect(d)}
+                            title="Switch lineage to this file"
+                            className="p-1 rounded text-slate-400 hover:text-cyan-500 hover:bg-cyan-500/10"
+                          >
+                            <ArrowRight className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
                       </div>
                     ))}
                   </div>
                 )}
               </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── Per-File Detail Slide-in Drawer ── */}
+        {drawerFile && (
+          <div className="fixed inset-y-0 right-0 z-50 w-full sm:w-96 bg-white dark:bg-slate-900 border-l border-slate-200 dark:border-slate-800 shadow-2xl flex flex-col animate-in slide-in-from-right duration-200">
+            {/* Drawer Header */}
+            <div className="flex items-center justify-between p-4 border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/80">
+              <div className="flex items-center gap-2">
+                <FileCode className="w-4 h-4 text-violet-500" />
+                <span className="font-bold text-sm text-slate-900 dark:text-white truncate max-w-[200px]" title={drawerFile}>
+                  {drawerFile.split('/').pop()}
+                </span>
+              </div>
+              <button
+                onClick={() => setDrawerFile(null)}
+                className="p-1 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-slate-800"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Drawer Content */}
+            <div className="p-4 overflow-y-auto space-y-4 flex-1 text-xs">
+              {/* Full Path */}
+              <div>
+                <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400">File Path</label>
+                <p className="mt-0.5 p-2 rounded-lg bg-slate-100 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 font-mono text-slate-700 dark:text-slate-300 break-all select-all">
+                  {drawerFile}
+                </p>
+              </div>
+
+              {/* Stats Grid */}
+              <div className="grid grid-cols-2 gap-2">
+                <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800 text-center">
+                  <div className="text-base font-bold font-mono text-slate-900 dark:text-white">{drawerLoc.toLocaleString()}</div>
+                  <div className="text-[10px] text-slate-400">Lines of Code</div>
+                </div>
+                <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800 text-center">
+                  <div className="text-base font-bold font-mono uppercase text-violet-500">{drawerExt || 'TXT'}</div>
+                  <div className="text-[10px] text-slate-400">Extension</div>
+                </div>
+              </div>
+
+              {/* Blast Radius Badge & Info */}
+              {drawerBlast && (
+                <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800 space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Blast Radius</span>
+                    <Badge color={drawerBlast.color}>{drawerBlast.level} Risk</Badge>
+                  </div>
+                  <p className="text-slate-700 dark:text-slate-300 font-medium">{drawerBlast.role}</p>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400">{drawerBlast.desc}</p>
+                </div>
+              )}
+
+              {/* Coupling Metrics */}
+              <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Coupling Analysis</span>
+                  {drawerCoupling?.coupled && (
+                    <Badge color="orange">High Coupling</Badge>
+                  )}
+                </div>
+                <div className="grid grid-cols-2 gap-2 text-center">
+                  <div className="p-2 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+                    <span className="text-sm font-bold font-mono text-cyan-500">{drawerCoupling?.outDegree ?? drawerBlast?.directDeps?.length ?? 0}</span>
+                    <p className="text-[10px] text-slate-400">Out-Degree (Imports)</p>
+                  </div>
+                  <div className="p-2 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+                    <span className="text-sm font-bold font-mono text-emerald-500">{drawerCoupling?.inDegree ?? drawerBlast?.directCons?.length ?? 0}</span>
+                    <p className="text-[10px] text-slate-400">In-Degree (Used By)</p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Consumers list */}
+              {drawerBlast?.directCons && (
+                <div>
+                  <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                    Direct Dependents ({drawerBlast.directCons.length})
+                  </label>
+                  <div className="mt-1 space-y-1 max-h-32 overflow-y-auto">
+                    {drawerBlast.directCons.length === 0 ? (
+                      <p className="text-[11px] text-slate-400 italic">None</p>
+                    ) : (
+                      drawerBlast.directCons.map((c, i) => (
+                        <div
+                          key={i}
+                          onClick={() => { setDrawerFile(c); }}
+                          className="p-1.5 rounded-lg bg-slate-100 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 font-mono text-[11px] text-slate-600 dark:text-slate-400 truncate cursor-pointer hover:text-emerald-400"
+                        >
+                          {c}
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Drawer Actions */}
+            <div className="p-3 border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 flex items-center gap-2">
+              <button
+                onClick={() => {
+                  handleSelect(drawerFile);
+                  setDrawerFile(null);
+                }}
+                className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl bg-violet-600 hover:bg-violet-500 text-white font-semibold text-xs transition-colors"
+              >
+                <Zap className="w-3.5 h-3.5" /> Focus in Lineage
+              </button>
+              <button
+                onClick={() => setDrawerFile(null)}
+                className="px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white text-xs font-semibold"
+              >
+                Close
+              </button>
             </div>
           </div>
         )}
