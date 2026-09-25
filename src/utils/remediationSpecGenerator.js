@@ -21,6 +21,8 @@ export function generateRemediationSpec(result = {}, options = {}) {
     deadCode = { totalUnusedExports: 0, unusedExports: [], totalOrphanFiles: 0, orphanFiles: [] },
     duplication = { duplicationPercentage: 0, duplicateBlocks: [] },
     licenseAudit = { copyleftCount: 0, copyleftPackages: [] },
+    technicalDebt = { totalCount: 0, items: [], byTag: {}, highSeverityCount: 0 },
+    apiDrift = { driftScore: 100, danglingCalls: [], orphanRoutes: [], matchedContracts: [] },
   } = result;
 
   const projectName = options.projectName || 'Codebase';
@@ -216,6 +218,61 @@ export function generateRemediationSpec(result = {}, options = {}) {
   lines.push('');
 
   // ─────────────────────────────────────────────
+  // 7.5. API CONTRACT DRIFT
+  // ─────────────────────────────────────────────
+  lines.push('## 🔌 [P3.5] FULL-STACK API CONTRACT DRIFT');
+  lines.push(`Contract Alignment Score: **${apiDrift.driftScore ?? 100}%**`);
+  lines.push('');
+
+  const dangling = apiDrift.danglingCalls || [];
+  if (dangling.length > 0) {
+    lines.push(`### ⚠️ Dangling Client API Calls (${dangling.length} unimplemented endpoints):`);
+    lines.push('The frontend calls these endpoints, but no matching backend route was discovered:');
+    dangling.forEach(d => {
+      lines.push(`- \`${d.method || 'GET'} ${d.endpoint}\` called in \`${d.file}:${d.line || 1}\``);
+    });
+    lines.push('*(Action: Implement the missing server endpoint handlers or remove dead frontend client requests.)*');
+    lines.push('');
+  } else {
+    lines.push('✅ **No dangling client API calls. All client requests map to backend endpoints.**');
+    lines.push('');
+  }
+
+  // ─────────────────────────────────────────────
+  // 7.6. TECHNICAL DEBT & ANNOTATIONS
+  // ─────────────────────────────────────────────
+  lines.push('## ⏳ [P3.6] TECHNICAL DEBT & UNRESOLVED ANNOTATIONS');
+  lines.push(`Total Annotations: \`${technicalDebt.totalCount || 0}\` (\`${technicalDebt.highSeverityCount || 0}\` urgent fixes)`);
+  lines.push('');
+
+  const debtItems = technicalDebt.items || [];
+  if (debtItems.length > 0) {
+    const urgentDebt = debtItems.filter(i => i.severity === 'High');
+    if (urgentDebt.length > 0) {
+      lines.push(`### Urgent Fixes (FIXME / HACK / BUG / XXX - ${urgentDebt.length} items):`);
+      urgentDebt.slice(0, 15).forEach(u => {
+        lines.push(`- **\`${u.tag}\`** in \`${u.file}:${u.line}\`: ${u.message}${u.author ? ` (@${u.author})` : ''}`);
+      });
+      lines.push('');
+    }
+
+    const todoItems = debtItems.filter(i => i.tag === 'TODO');
+    if (todoItems.length > 0) {
+      lines.push(`### Pending TODOs (${todoItems.length} items):`);
+      todoItems.slice(0, 10).forEach(t => {
+        lines.push(`- \`${t.file}:${t.line}\`: ${t.message}`);
+      });
+      lines.push('');
+    }
+  } else {
+    lines.push('✅ **No unresolved TODO or FIXME comment flags found.**');
+    lines.push('');
+  }
+
+  lines.push('---');
+  lines.push('');
+
+  // ─────────────────────────────────────────────
   // 8. PRIORITY 4: CODE DUPLICATION & LICENSE AUDIT
   // ─────────────────────────────────────────────
   lines.push('## 👯 [P4] CODE DUPLICATION & LICENSE COMPLIANCE');
@@ -337,6 +394,24 @@ export function generateSingleIssuePrompt(type, data = {}, context = {}) {
         `- Cyclomatic Complexity Score: ${data.complexity}`,
         `- Severity: ${data.severity || 'High'}`,
         `Task: Simplify branching logic using guard clauses, early returns, strategy dictionaries, or helper sub-functions. Provide the refactored code.`
+      ].join('\n');
+
+    case 'debt':
+      return [
+        `Resolve this ${data.tag || 'TODO'} comment in my codebase:`,
+        `- File: ${data.file}:${data.line || 1}`,
+        `- Annotation: ${data.tag}${data.author ? ` (@${data.author})` : ''}`,
+        `- Message: "${data.message}"`,
+        `Task: Provide the permanent implementation or fix to address this comment and remove the technical debt annotation.`
+      ].join('\n');
+
+    case 'api_drift':
+      return [
+        `Implement missing backend API endpoint for this dangling client call:`,
+        `- Client File: ${data.file}:${data.line || 1}`,
+        `- HTTP Method: ${data.method || 'GET'}`,
+        `- Endpoint Path: ${data.endpoint}`,
+        `Task: Create the backend route handler with input validation, appropriate status codes, and JSON response structure matching standard REST conventions.`
       ].join('\n');
 
     default:

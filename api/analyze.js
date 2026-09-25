@@ -881,6 +881,254 @@ class MermaidValidator {
 }
 
 // ─────────────────────────────────────────────
+// STAGE 12 — Technical Debt & Annotation Tracker
+// Scans all source files for TODO, FIXME, HACK, BUG, XXX, OPTIMIZE annotations.
+// ─────────────────────────────────────────────
+class DebtScanner {
+  constructor(files) { this.files = files; }
+
+  scan() {
+    const items = [];
+    const byTag = { TODO: 0, FIXME: 0, HACK: 0, BUG: 0, XXX: 0, OPTIMIZE: 0 };
+    const tagSeverities = {
+      FIXME: 'High',
+      HACK: 'High',
+      BUG: 'High',
+      XXX: 'High',
+      OPTIMIZE: 'Medium',
+      TODO: 'Low',
+    };
+
+    const pattern = /(?:\/\/|#|\/\*|\*)\s*(TODO|FIXME|HACK|BUG|XXX|OPTIMIZE)(?:\s*(?:\(([^)]+)\)|:))?\s*(.+?)(?:\*\/|$)/gi;
+
+    for (const file of this.files) {
+      const content = file.content || '';
+      const lines = content.split('\n');
+
+      lines.forEach((lineText, idx) => {
+        const re = new RegExp(pattern.source, 'gi');
+        let m;
+        while ((m = re.exec(lineText)) !== null) {
+          const rawTag = (m[1] || '').toUpperCase();
+          const tag = byTag.hasOwnProperty(rawTag) ? rawTag : 'TODO';
+          const author = (m[2] || '').trim();
+          const message = (m[3] || '').trim().replace(/^[:\-\s]+/, '');
+
+          if (message.length < 2) continue;
+
+          byTag[tag] = (byTag[tag] || 0) + 1;
+
+          items.push({
+            tag,
+            author: author || null,
+            message: message.slice(0, 160),
+            file: file.name,
+            shortName: file.name.split('/').pop(),
+            line: idx + 1,
+            severity: tagSeverities[tag] || 'Low',
+          });
+        }
+      });
+    }
+
+    const highSeverityCount = (byTag.FIXME || 0) + (byTag.HACK || 0) + (byTag.BUG || 0) + (byTag.XXX || 0);
+
+    const fileCountMap = new Map();
+    items.forEach(it => fileCountMap.set(it.file, (fileCountMap.get(it.file) || 0) + 1));
+    const byFile = Array.from(fileCountMap.entries())
+      .map(([file, count]) => ({ file, shortName: file.split('/').pop(), count }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 10);
+
+    return {
+      totalCount: items.length,
+      highSeverityCount,
+      byTag,
+      byFile,
+      items: items.slice(0, 60),
+    };
+  }
+}
+
+// ─────────────────────────────────────────────
+// STAGE 13 — API Contract Drift Scanner
+// Cross-references client HTTP requests against server endpoint declarations.
+// ─────────────────────────────────────────────
+class ApiContractDriftScanner {
+  constructor(files) { this.files = files; }
+
+  scan() {
+    const backendRoutes = [];
+    const clientCalls = [];
+
+    const backendPatterns = [
+      { re: /(?:app|router)\.(get|post|put|delete|patch)\s*\(\s*['"]([^'"]+)['"]/gi, framework: 'Express.js' },
+      { re: /@(?:app|router)\.(get|post|put|delete|patch)\s*\(\s*['"]([^'"]+)['"]/gi, framework: 'FastAPI/Flask' },
+      { re: /@(?:Get|Post|Put|Delete|Patch)\s*\(\s*['"]([^'"]+)['"]/gi, framework: 'NestJS' },
+    ];
+
+    const clientPatterns = [
+      { re: /fetch\s*\(\s*['"`]([^'"`\s\?#]+)['"`]/gi, method: 'ALL' },
+      { re: /axios\.(get|post|put|delete|patch)\s*\(\s*['"`]([^'"`\s\?#]+)['"`]/gi, methodIdx: 1, pathIdx: 2 },
+      { re: /axios\s*\(\s*\{[^}]*url\s*:\s*['"`]([^'"`\s\?#]+)['"`]/gi, method: 'ALL' },
+      { re: /apiClient\.(get|post|put|delete|patch)\s*\(\s*['"`]([^'"`\s\?#]+)['"`]/gi, methodIdx: 1, pathIdx: 2 },
+      { re: /(?:get|post|put|delete)\s*\(\s*['"`](\/(?:api|v[0-9]+)\/[^'"`\s\?#]+)['"`]/gi, method: 'ALL' },
+    ];
+
+    for (const file of this.files) {
+      const content = file.content || '';
+      for (const p of backendPatterns) {
+        const re = new RegExp(p.re.source, 'gi');
+        let m;
+        while ((m = re.exec(content)) !== null) {
+          const method = (m[1] || 'GET').toUpperCase();
+          const path = m[2] || '';
+          if (path.startsWith('/') || path.startsWith('api')) {
+            const normalized = path.startsWith('/') ? path : '/' + path;
+            backendRoutes.push({
+              path: normalized,
+              method,
+              file: file.name,
+              framework: p.framework
+            });
+          }
+        }
+      }
+
+      if (file.name.includes('/api/') && /(?:route|index)\.(?:js|ts)$/i.test(file.name)) {
+        const routePath = file.name
+          .replace(/.*\/app/i, '')
+          .replace(/.*\/src\/pages/i, '')
+          .replace(/\/(?:route|index)\.(?:js|ts)$/i, '');
+        if (routePath) {
+          backendRoutes.push({
+            path: routePath.startsWith('/') ? routePath : '/' + routePath,
+            method: 'ALL',
+            file: file.name,
+            framework: 'Next.js App Router'
+          });
+        }
+      }
+    }
+
+    for (const file of this.files) {
+      if (/server|backend|controllers|routes/i.test(file.name) && !file.name.includes('/client') && !file.name.includes('/src/components') && !file.name.includes('/src/pages') && !file.name.includes('/src/services')) {
+        continue;
+      }
+
+      const content = file.content || '';
+
+      for (const cp of clientPatterns) {
+        const re = new RegExp(cp.re.source, 'gi');
+        let m;
+        while ((m = re.exec(content)) !== null) {
+          let path = '';
+          let method = cp.method || 'GET';
+
+          if (cp.pathIdx) {
+            method = (m[cp.methodIdx] || 'GET').toUpperCase();
+            path = m[cp.pathIdx] || '';
+          } else {
+            path = m[1] || '';
+          }
+
+          if (path.startsWith('http://') || path.startsWith('https://')) {
+            try {
+              const parsed = new URL(path);
+              path = parsed.pathname;
+            } catch { continue; }
+          }
+
+          if (!path.startsWith('/') && !path.startsWith('api')) continue;
+          const normalizedPath = path.startsWith('/') ? path : '/' + path;
+          const lineNum = content.slice(0, m.index).split('\n').length;
+
+          if (!clientCalls.some(c => c.endpoint === normalizedPath && c.file === file.name && c.line === lineNum)) {
+            clientCalls.push({
+              endpoint: normalizedPath,
+              method,
+              file: file.name,
+              shortName: file.name.split('/').pop(),
+              line: lineNum,
+            });
+          }
+        }
+      }
+    }
+
+    const normalizeParamPattern = (p) => {
+      return p
+        .replace(/\$\{[^}]+\}/g, ':param')
+        .replace(/:[a-zA-Z0-9_]+/g, ':param')
+        .replace(/\{[a-zA-Z0-9_]+\}/g, ':param')
+        .replace(/\/+$/, '');
+    };
+
+    const matchedContracts = [];
+    const danglingCalls = [];
+    const matchedBackendIndices = new Set();
+
+    for (const call of clientCalls) {
+      const callNorm = normalizeParamPattern(call.endpoint);
+      let matchedRoute = null;
+
+      backendRoutes.forEach((route, rIdx) => {
+        const routeNorm = normalizeParamPattern(route.path);
+        if (callNorm === routeNorm || call.endpoint === route.path) {
+          const methodMatch = call.method === 'ALL' || route.method === 'ALL' || call.method === route.method;
+          if (methodMatch) {
+            matchedRoute = route;
+            matchedBackendIndices.add(rIdx);
+          }
+        }
+      });
+
+      if (matchedRoute) {
+        matchedContracts.push({
+          endpoint: call.endpoint,
+          method: call.method,
+          clientFile: call.file,
+          clientLine: call.line,
+          backendFile: matchedRoute.file,
+          framework: matchedRoute.framework,
+        });
+      } else {
+        danglingCalls.push({
+          endpoint: call.endpoint,
+          method: call.method,
+          file: call.file,
+          line: call.line,
+          reason: 'No matching backend route handler found',
+        });
+      }
+    }
+
+    const orphanRoutes = backendRoutes
+      .filter((_, idx) => !matchedBackendIndices.has(idx))
+      .map(r => ({
+        path: r.path,
+        method: r.method,
+        file: r.file,
+        framework: r.framework,
+      }));
+
+    const totalClientCalls = clientCalls.length;
+    const driftScore = totalClientCalls > 0
+      ? Math.round((matchedContracts.length / totalClientCalls) * 100)
+      : 100;
+
+    return {
+      driftScore,
+      totalBackendRoutes: backendRoutes.length,
+      totalClientCalls,
+      matchedContracts: matchedContracts.slice(0, 30),
+      danglingCalls: danglingCalls.slice(0, 30),
+      orphanRoutes: orphanRoutes.slice(0, 30),
+    };
+  }
+}
+
+// ─────────────────────────────────────────────
 // Helper — Build Clean Structure Tree
 // ─────────────────────────────────────────────
 function buildStructureTree(files) {
@@ -946,6 +1194,8 @@ export default async function handler(req, res) {
     const largeFiles        = new LargeFileDetector(cappedFiles).detect();
     const couplingData      = new CouplingAnalyzer(cappedFiles).analyze();
     const jsSecurityIssues  = new JsSecurityScanner(cappedFiles).scan();
+    const technicalDebt     = new DebtScanner(cappedFiles).scan();
+    const apiDrift          = new ApiContractDriftScanner(cappedFiles).scan();
 
     const hld     = validator.safeValidate(hldRaw, 'hld', 'graph TD\n  A["Could not generate HLD"]');
     const lineage = validator.safeValidate(lineageRaw, 'lineage', 'graph TD\n  A["No import relationships found"]');
@@ -955,6 +1205,7 @@ export default async function handler(req, res) {
       metrics, requirements, hld, lld, lineage, structureTree,
       complexityReport, jsCircularDeps, commentRatios,
       largeFiles, couplingData, jsSecurityIssues,
+      technicalDebt, apiDrift,
     });
   } catch (err) {
     console.error('[analyze] Error:', err);

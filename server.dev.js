@@ -189,6 +189,55 @@ function runLocalJsFallback(files) {
     if (routes.length > 0) lines.push(`  R_0 -.-> DB_${idx}`);
   });
 
+  // Technical debt annotations
+  const debtItems = [];
+  const debtByTag = { TODO: 0, FIXME: 0, HACK: 0, BUG: 0, XXX: 0, OPTIMIZE: 0 };
+  const debtPattern = /(?:\/\/|#|\/\*|\*)\s*(TODO|FIXME|HACK|BUG|XXX|OPTIMIZE)(?:\s*(?:\(([^)]+)\)|:))?\s*(.+?)(?:\*\/|$)/gi;
+
+  for (const f of files) {
+    const lines = (f.content || '').split('\n');
+    lines.forEach((lineText, idx) => {
+      const re = new RegExp(debtPattern.source, 'gi');
+      let m;
+      while ((m = re.exec(lineText)) !== null) {
+        const rawTag = (m[1] || '').toUpperCase();
+        const tag = debtByTag.hasOwnProperty(rawTag) ? rawTag : 'TODO';
+        const msg = (m[3] || '').trim().replace(/^[:\-\s]+/, '');
+        if (msg.length < 2) continue;
+        debtByTag[tag] = (debtByTag[tag] || 0) + 1;
+        debtItems.push({
+          tag,
+          author: (m[2] || '').trim() || null,
+          message: msg.slice(0, 160),
+          file: f.name,
+          shortName: (f.name || '').split('/').pop(),
+          line: idx + 1,
+          severity: ['FIXME', 'HACK', 'BUG', 'XXX'].includes(tag) ? 'High' : (tag === 'OPTIMIZE' ? 'Medium' : 'Low'),
+        });
+      }
+    });
+  }
+
+  // API Drift check
+  const clientCalls = [];
+  const clientRe = /(?:fetch|axios\.(?:get|post|put|delete|patch))\s*\(\s*['"`]([^'"`\s\?#]+)['"`]/gi;
+  for (const f of files) {
+    if (!f.name?.includes('server') && !f.name?.includes('api/')) {
+      let cm;
+      while ((cm = clientRe.exec(f.content || '')) !== null) {
+        let p = cm[1];
+        if (p.startsWith('/') || p.startsWith('api')) {
+          clientCalls.push({ endpoint: p.startsWith('/') ? p : '/' + p, file: f.name });
+        }
+      }
+    }
+  }
+
+  const dangling = clientCalls.filter(c => !routes.some(r => r.path === c.endpoint)).slice(0, 15);
+  const matched = clientCalls.filter(c => routes.some(r => r.path === c.endpoint)).slice(0, 15);
+  const orphan = routes.filter(r => !clientCalls.some(c => c.endpoint === r.path)).slice(0, 15);
+  const driftScore = clientCalls.length > 0 ? Math.round((matched.length / clientCalls.length) * 100) : 100;
+
   return {
     pythonAST: { classes: [], functions: [], commentRatios: [] },
     apiRoutes: routes,
@@ -206,6 +255,21 @@ function runLocalJsFallback(files) {
     largeFiles,
     couplingData: { couplingMap: [], highlyCoupledCount: 0 },
     jsSecurityIssues: security,
+    technicalDebt: {
+      totalCount: debtItems.length,
+      highSeverityCount: (debtByTag.FIXME || 0) + (debtByTag.HACK || 0) + (debtByTag.BUG || 0) + (debtByTag.XXX || 0),
+      byTag: debtByTag,
+      byFile: [],
+      items: debtItems.slice(0, 50),
+    },
+    apiDrift: {
+      driftScore,
+      totalBackendRoutes: routes.length,
+      totalClientCalls: clientCalls.length,
+      matchedContracts: matched.map(m => ({ endpoint: m.endpoint, method: 'ALL', clientFile: m.file, backendFile: 'server.js' })),
+      danglingCalls: dangling.map(d => ({ endpoint: d.endpoint, method: 'ALL', file: d.file, reason: 'No matching backend route handler found' })),
+      orphanRoutes: orphan.map(o => ({ path: o.path, method: o.method, file: o.file })),
+    },
   };
 }
 

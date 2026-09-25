@@ -73,6 +73,14 @@ function mergeResults(results) {
     lld: results[0].lld,
     lineage: results[0].lineage,
     structureTree: {},
+    complexityReport: results[0].complexityReport || { byFile: [], highComplexityCount: 0 },
+    jsCircularDeps: results[0].jsCircularDeps || [],
+    commentRatios: results[0].commentRatios || {},
+    largeFiles: results[0].largeFiles || [],
+    couplingData: results[0].couplingData || {},
+    jsSecurityIssues: results[0].jsSecurityIssues || [],
+    technicalDebt: results[0].technicalDebt || { totalCount: 0, items: [], byTag: {} },
+    apiDrift: results[0].apiDrift || { driftScore: 100, danglingCalls: [], orphanRoutes: [] },
   };
 
   for (const r of results) {
@@ -85,6 +93,17 @@ function mergeResults(results) {
     merged.requirements.commands = [...new Set([...merged.requirements.commands, ...(r.requirements?.commands || [])])];
     merged.requirements.dependencies.push(...(r.requirements?.dependencies || []));
     Object.assign(merged.structureTree, r.structureTree || {});
+
+    if (r.jsSecurityIssues && r !== results[0]) {
+      merged.jsSecurityIssues = [...merged.jsSecurityIssues, ...r.jsSecurityIssues];
+    }
+    if (r.largeFiles && r !== results[0]) {
+      merged.largeFiles = [...merged.largeFiles, ...r.largeFiles];
+    }
+    if (r.technicalDebt?.items && r !== results[0]) {
+      merged.technicalDebt.items = [...merged.technicalDebt.items, ...r.technicalDebt.items];
+      merged.technicalDebt.totalCount = merged.technicalDebt.items.length;
+    }
   }
 
   const seen = new Set();

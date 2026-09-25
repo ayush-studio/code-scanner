@@ -24,6 +24,8 @@ import CommentRatioCard from '../components/dashboard/CommentRatioCard';
 import ThemeToggle from '../components/ui/ThemeToggle';
 import SkeletonCard, { SkeletonDiagram } from '../components/ui/SkeletonCard';
 import RemediationModal from '../components/dashboard/RemediationModal';
+import TechnicalDebtCard from '../components/dashboard/TechnicalDebtCard';
+import ApiDriftCard from '../components/dashboard/ApiDriftCard';
 
 const SECTIONS = [
   { id: 'overview',     label: 'Overview & Health',      icon: LayoutDashboard },
@@ -258,6 +260,8 @@ export default function DashboardPage({ onBack }) {
         {/* ── TAB 3: API & DATABASE ── */}
         {activeSection === 'api' && (
           <div className="space-y-8">
+            <ApiDriftCard apiDrift={result?.apiDrift || {}} />
+
             <ApiRoutesTable
               routes={pythonAnalysis.apiRoutes || []}
               schemas={pythonAnalysis.databaseSchemas || []}
@@ -295,6 +299,9 @@ export default function DashboardPage({ onBack }) {
               duplication={result?.duplication || {}}
               licenseAudit={result?.licenseAudit || {}}
             />
+
+            {/* Technical Debt Tracker (TODO, FIXME, HACK annotations) */}
+            <TechnicalDebtCard technicalDebt={result?.technicalDebt || {}} />
           </div>
         )}
 
