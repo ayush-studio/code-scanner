@@ -281,23 +281,31 @@ class PythonDiagramBuilder:
             return 'graph LR\n  Client["🌐 Web Client"] --> API["⚡ API Layer"]'
 
         lines = ['graph LR']
-        lines.append('  Client["🌐 Client App"]')
+        lines.append('  subgraph ClientTier ["🌐 Client Tier"]')
+        lines.append('    Client["Frontend Application"]')
+        lines.append('  end')
 
-        # Group routes
-        for idx, r in enumerate(routes[:15]):
-            r_id = f"R_{idx}"
-            lines.append(f'  {r_id}["{r["method"]} {r["path"]}"]')
-            lines.append(f'  Client --> {r_id}')
+        if routes:
+            lines.append('  subgraph Endpoints ["⚡ API Gateway & Endpoints"]')
+            for idx, r in enumerate(routes[:10]):
+                r_id = f"R_{idx}"
+                lines.append(f'    {r_id}["{r["method"]} {r["path"]}"]')
+            lines.append('  end')
 
-        # DB schemas
-        for idx, s in enumerate(schemas[:8]):
-            s_id = f"DB_{idx}"
-            lines.append(f'  {s_id}[("🗄️ {s["type"]}: {s["name"]}")]')
+        if schemas:
+            lines.append('  subgraph DatabaseTier ["🗄️ Data Storage Tier"]')
+            for idx, s in enumerate(schemas[:6]):
+                s_id = f"DB_{idx}"
+                lines.append(f'    {s_id}[("{s.get("type", "DB")}: {s.get("name", "Table")}")]')
+            lines.append('  end')
 
-            # Link first few routes to DB
+        for idx in range(min(len(routes), 10)):
+            lines.append(f'  Client --> R_{idx}')
+
+        for idx, s in enumerate(schemas[:6]):
             if routes:
-                r_idx = idx % len(routes[:15])
-                lines.append(f'  R_{r_idx} -.-> {s_id}')
+                target_idx = idx % min(len(routes), 5)
+                lines.append(f'  R_{target_idx} -.-> DB_{idx}')
 
         return '\n'.join(lines)
 

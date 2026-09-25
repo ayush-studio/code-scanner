@@ -98,15 +98,42 @@ function clientSideFallbackScan(files) {
   function roundScore(n) { return Math.round(n * 10) / 10; }
 
   // Topology diagram fallback
-  const lines = ['graph LR', '  Client["🌐 Client App"]'];
+  const lines = ['graph LR'];
+  lines.push('  subgraph ClientTier ["🌐 Client Tier"]');
+  lines.push('    Client["Frontend Application"]');
+  lines.push('  end');
+
+  if (routes.length > 0) {
+    lines.push('  subgraph Endpoints ["⚡ API Gateway & Endpoints"]');
+    routes.slice(0, 10).forEach((r, idx) => {
+      lines.push(`    R_${idx}["${r.method} ${r.path}"]`);
+    });
+    lines.push('  end');
+  }
+
+  if (schemas.length > 0) {
+    lines.push('  subgraph DatabaseTier ["🗄️ Data Storage Tier"]');
+    schemas.slice(0, 6).forEach((s, idx) => {
+      lines.push(`    DB_${idx}[("${s.name}")]`);
+    });
+    lines.push('  end');
+  }
+
   routes.slice(0, 10).forEach((r, idx) => {
-    lines.push(`  R_${idx}["${r.method} ${r.path}"]`);
     lines.push(`  Client --> R_${idx}`);
   });
-  schemas.slice(0, 5).forEach((s, idx) => {
-    lines.push(`  DB_${idx}[("🗄️ ${s.name}")]`);
-    if (routes.length > 0) lines.push(`  R_0 -.-> DB_${idx}`);
+
+  schemas.slice(0, 6).forEach((s, idx) => {
+    if (routes.length > 0) {
+      const matchIdx = routes.findIndex(r => r.path?.toLowerCase().includes(s.name?.toLowerCase()));
+      const targetRouteIdx = matchIdx !== -1 ? matchIdx : (idx % Math.min(routes.length, 5));
+      lines.push(`  R_${targetRouteIdx} -.-> DB_${idx}`);
+    }
   });
+
+  if (routes.length === 0 && schemas.length === 0) {
+    lines.push('  Client --> API["⚡ API Gateway"]');
+  }
 
   return {
     pythonAST: { classes: [], functions: [] },

@@ -52,13 +52,34 @@ function runLocalJsFallback(files) {
   const antiPatterns = [];
 
   const routePatterns = [
+    // Node.js
     { re: /(?:app|router)\.(get|post|put|delete|patch)\s*\(\s*['"]([^'"]+)['"]/gi, framework: 'Express.js' },
-    { re: /@(?:app|router)\.(get|post|put|delete|patch)\s*\(\s*['"]([^'"]+)['"]/gi, framework: 'FastAPI/Flask' },
+    { re: /@(?:Get|Post|Put|Delete|Patch)\s*\(\s*['"]([^'"]+)['"]/gi, framework: 'NestJS' },
+    { re: /fastify\.(get|post|put|delete|patch)\s*\(\s*['"]([^'"]+)['"]/gi, framework: 'Fastify' },
+    // Python
+    { re: /@(?:app|router|api)\.(get|post|put|delete|patch)\s*\(\s*['"]([^'"]+)['"]/gi, framework: 'FastAPI/Flask' },
+    { re: /path\s*\(\s*['"]([^'"]+)['"]\s*,/gi, framework: 'Django' },
+    // Go
+    { re: /(?:r|router|app|api|group)\.(GET|POST|PUT|DELETE|PATCH)\s*\(\s*['"]([^'"]+)['"]/g, framework: 'Go (Gin/Echo/Fiber)' },
+    { re: /(?:r|router)\.(get|post|put|delete)\s*\(\s*['"]([^'"]+)['"]/gi, framework: 'Go Chi' },
+    // Java / Kotlin
+    { re: /@(?:GetMapping|PostMapping|PutMapping|DeleteMapping|PatchMapping|RequestMapping)\s*\(\s*(?:(?:value|path)\s*=\s*)?['"]([^'"]+)['"]/gi, framework: 'Spring Boot' },
+    { re: /@Path\s*\(\s*['"]([^'"]+)['"]/gi, framework: 'JAX-RS' },
+    // C# / .NET
+    { re: /\[(?:HttpGet|HttpPost|HttpPut|HttpDelete|HttpPatch|Route)\s*\(\s*['"]([^'"]+)['"]\)\]/gi, framework: 'ASP.NET Core' },
+    { re: /app\.Map(?:Get|Post|Put|Delete|Patch)\s*\(\s*['"]([^'"]+)['"]/gi, framework: 'ASP.NET Minimal API' },
+    // Rust
+    { re: /#\[(?:get|post|put|delete|patch)\s*\(\s*['"]([^'"]+)['"]\)\]/gi, framework: 'Rust Actix/Rocket' },
+    // PHP
+    { re: /Route::(get|post|put|delete|patch)\s*\(\s*['"]([^'"]+)['"]/gi, framework: 'Laravel' },
+    // Ruby
+    { re: /^\s*(get|post|put|delete|patch)\s+['"]([^'"]+)['"]/gim, framework: 'Ruby on Rails' },
   ];
 
   for (const f of files) {
     const name = f.name || '';
     const content = f.content || '';
+    const ext = name.split('.').pop()?.toLowerCase();
 
     // Route scanner
     for (const p of routePatterns) {
@@ -74,14 +95,14 @@ function runLocalJsFallback(files) {
       }
     }
 
-    // Security scanner
-    if (/(?:api[_-]?key|secret[_-]?key|password)\s*=\s*['"][A-Za-z0-9_\-]{16,}['"]/i.test(content)) {
+    // Security scanner (Universal + Polyglot)
+    if (/(?:api[_-]?key|secret[_-]?key|password|jwt[_-]?secret)\s*[:=]\s*['"][A-Za-z0-9+/=_\-]{14,}['"]/i.test(content)) {
       security.push({
         severity: 'High',
         rule: 'Potential Hardcoded Secret / Key',
         file: name,
         line: 1,
-        snippet: 'Hardcoded key pattern matched'
+        snippet: 'Hardcoded credential pattern matched'
       });
     }
 
@@ -95,10 +116,43 @@ function runLocalJsFallback(files) {
       });
     }
 
-    // Schema detector
-    const modelMatches = [...content.matchAll(/model\s+(\w+)\s*\{/g)];
-    for (const m of modelMatches) {
+    // Language specific security checks
+    if (ext === 'py' && /pickle\.loads?|shell\s*=\s*True/i.test(content)) {
+      security.push({ severity: 'High', rule: 'Unsafe Python Subprocess / Deserialization', file: name, line: 1, snippet: 'pickle.load or shell=True detected' });
+    } else if (ext === 'go' && /(?:Query|Exec)\s*\(\s*fmt\.Sprintf/i.test(content)) {
+      security.push({ severity: 'High', rule: 'Go SQL Injection via fmt.Sprintf', file: name, line: 1, snippet: 'fmt.Sprintf in SQL query' });
+    } else if (['java', 'cs'].includes(ext) && /(?:executeQuery|SqlCommand)\s*\([^)]*\+/i.test(content)) {
+      security.push({ severity: 'High', rule: 'SQL Injection via String Concatenation', file: name, line: 1, snippet: 'Dynamic string concatenated query' });
+    } else if (['c', 'cpp'].includes(ext) && /\b(?:strcpy|gets|sprintf)\s*\(/i.test(content)) {
+      security.push({ severity: 'High', rule: 'Deprecated Insecure Buffer Function', file: name, line: 1, snippet: 'strcpy/gets buffer overflow risk' });
+    } else if (ext === 'php' && /(?:mysqli_query|PDO::query)\s*\([^)]*\$/i.test(content)) {
+      security.push({ severity: 'High', rule: 'PHP SQL Injection via Variable in Query', file: name, line: 1, snippet: 'Raw PHP variable in query' });
+    }
+
+    // Schema detector (Prisma, JPA, GORM, EF Core, Mongoose, SQLAlchemy)
+    const prismaMatches = [...content.matchAll(/model\s+(\w+)\s*\{/g)];
+    for (const m of prismaMatches) {
       schemas.push({ name: m[1], type: 'Prisma ORM', file: name, fields: ['id', 'createdAt'] });
+    }
+
+    const jpaMatches = [...content.matchAll(/@Entity[\s\S]*?class\s+(\w+)/g)];
+    for (const m of jpaMatches) {
+      schemas.push({ name: m[1], type: 'JPA/Hibernate Entity', file: name, fields: ['id'] });
+    }
+
+    const gormMatches = [...content.matchAll(/type\s+(\w+)\s+struct\s*\{[^}]*gorm\.Model/g)];
+    for (const m of gormMatches) {
+      schemas.push({ name: m[1], type: 'Go GORM Model', file: name, fields: ['ID', 'CreatedAt'] });
+    }
+
+    const efMatches = [...content.matchAll(/DbSet<(\w+)>/g)];
+    for (const m of efMatches) {
+      schemas.push({ name: m[1], type: 'Entity Framework Core', file: name, fields: ['Id'] });
+    }
+
+    const sqlAlchemyMatches = [...content.matchAll(/class\s+(\w+)\s*\([^)]*Base[^)]*\):[\s\S]*?__tablename__/g)];
+    for (const m of sqlAlchemyMatches) {
+      schemas.push({ name: m[1], type: 'SQLAlchemy Model', file: name, fields: ['id'] });
     }
 
     // Anti-patterns
@@ -135,16 +189,20 @@ function runLocalJsFallback(files) {
     .sort((a, b) => b.riskScore - a.riskScore)
     .slice(0, 6);
 
-  // ── New fields: complexity, large files, comment ratio, coupling ──
-  const jsExts = new Set(['js', 'jsx', 'ts', 'tsx', 'mjs', 'cjs']);
+  // Polyglot complexity scanner
+  const polyglotExts = new Set([
+    'js', 'jsx', 'ts', 'tsx', 'mjs', 'cjs',
+    'py', 'java', 'go', 'rs', 'php', 'rb', 'kt', 'cs',
+    'cpp', 'c', 'cc', 'cxx', 'h', 'hpp', 'swift'
+  ]);
 
   const complexityByFile = files
-    .filter(f => jsExts.has(f.name?.split('.').pop()?.toLowerCase()))
+    .filter(f => polyglotExts.has(f.name?.split('.').pop()?.toLowerCase()))
     .map(f => {
       const c = (f.content || '');
       const count = (re) => (c.match(re) || []).length;
-      const complexity = 1 + count(/\bif\s*\(/g) + count(/\bfor\s*\(/g) + count(/\bwhile\s*\(/g) +
-                         count(/\bswitch\s*\(/g) + count(/\bcatch\s*[({]/g) + count(/&&/g) + count(/\|\|/g);
+      const complexity = 1 + count(/\bif\b/g) + count(/\b(?:for|foreach)\b/g) + count(/\bwhile\b/g) +
+                         count(/\b(?:switch|match)\b/g) + count(/\b(?:catch|except|rescue)\b/g) + count(/(?:&&|\band\b)/g) + count(/(?:\|\||\bor\b)/g);
       return {
         file: f.name,
         shortName: (f.name || '').split('/').pop(),
@@ -179,15 +237,43 @@ function runLocalJsFallback(files) {
   });
 
   // Topology diagram
-  const lines = ['graph LR', '  Client["🌐 Client App"]'];
+  const lines = ['graph LR'];
+  lines.push('  subgraph ClientTier ["🌐 Client Tier"]');
+  lines.push('    Client["Frontend Application"]');
+  lines.push('  end');
+
+  if (routes.length > 0) {
+    lines.push('  subgraph Endpoints ["⚡ API Gateway & Endpoints"]');
+    routes.slice(0, 10).forEach((r, idx) => {
+      lines.push(`    R_${idx}["${r.method} ${r.path}"]`);
+    });
+    lines.push('  end');
+  }
+
+  if (schemas.length > 0) {
+    lines.push('  subgraph DatabaseTier ["🗄️ Data Storage Tier"]');
+    schemas.slice(0, 6).forEach((s, idx) => {
+      lines.push(`    DB_${idx}[("${s.name}")]`);
+    });
+    lines.push('  end');
+  }
+
+  // Connections
   routes.slice(0, 10).forEach((r, idx) => {
-    lines.push(`  R_${idx}["${r.method} ${r.path}"]`);
     lines.push(`  Client --> R_${idx}`);
   });
-  schemas.slice(0, 5).forEach((s, idx) => {
-    lines.push(`  DB_${idx}[("🗄️ ${s.name}")]`);
-    if (routes.length > 0) lines.push(`  R_0 -.-> DB_${idx}`);
+
+  schemas.slice(0, 6).forEach((s, idx) => {
+    if (routes.length > 0) {
+      const matchIdx = routes.findIndex(r => r.path?.toLowerCase().includes(s.name?.toLowerCase()));
+      const targetRouteIdx = matchIdx !== -1 ? matchIdx : (idx % Math.min(routes.length, 5));
+      lines.push(`  R_${targetRouteIdx} -.-> DB_${idx}`);
+    }
   });
+
+  if (routes.length === 0 && schemas.length === 0) {
+    lines.push('  Client --> API["⚡ API Gateway"]');
+  }
 
   // Technical debt annotations
   const debtItems = [];

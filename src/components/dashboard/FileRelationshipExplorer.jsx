@@ -40,9 +40,18 @@ export default function FileRelationshipExplorer({
         if (target.name === fname) continue;
         const targetBase = target.name.split('/').pop().replace(/\.[^/.]+$/, '');
 
-        // Check if f imports targetBase
-        const importRegex = new RegExp(`(?:from\\s+['"][^'"]*${targetBase}['"]|require\\s*\\(\\s*['"][^'"]*${targetBase}['"]\\))`, 'i');
-        if (importRegex.test(content) || (content.includes(targetBase) && content.includes('import'))) {
+        // Universal polyglot import & reference detection across all languages
+        const importRegex = new RegExp(
+          `(?:from\\s+['"][^'"]*${targetBase}['"]` +
+          `|require(?:_relative)?\\s*\\(?\\s*['"][^'"]*${targetBase}['"]` +
+          `|#include\\s*["<][^">]*${targetBase}[^">]*[">]` +
+          `|use\\s+[^;\\n]*${targetBase}` +
+          `|using\\s+[^;\\n]*${targetBase}` +
+          `|import\\s+[^;\\n]*${targetBase})`,
+          'i'
+        );
+
+        if (importRegex.test(content) || (content.includes(targetBase) && (content.includes('import') || content.includes('include') || content.includes('using') || content.includes('use')))) {
           depMap.get(fname)?.push(target.name);
           consMap.get(target.name)?.push(fname);
         }

@@ -272,8 +272,8 @@ class HLDGenerator {
 }
 
 // ─────────────────────────────────────────────
-// STAGE 4 — Lineage Generator (Dependency Graph)
-// Traces relative import/require statements between source files.
+// STAGE 4 — Polyglot Lineage Generator (Dependency Graph)
+// Traces imports, requires, packages, and modules across JS/TS, Python, Go, Rust, Java, Kotlin, C#, C/C++, PHP, Ruby, and Swift.
 // ─────────────────────────────────────────────
 class LineageGenerator {
   constructor(files) {
@@ -284,39 +284,57 @@ class LineageGenerator {
     const edges = new Set();
     const nodeLabels = new Map();
 
-    const sourceExts = new Set(['js', 'jsx', 'ts', 'tsx', 'py', 'java', 'go', 'rs', 'php', 'rb', 'kt']);
+    const sourceExts = new Set([
+      'js', 'jsx', 'ts', 'tsx', 'mjs', 'cjs',
+      'py', 'java', 'go', 'rs', 'php', 'rb', 'kt', 'cs',
+      'cpp', 'c', 'cc', 'cxx', 'h', 'hpp', 'swift', 'scala'
+    ]);
+
     const sourceFiles = this.files.filter(f => {
       const ext = f.name.split('.').pop()?.toLowerCase();
       return sourceExts.has(ext);
     });
 
-    const importPatterns = [
-      /import\s+(?:[\w*{},\s]+\s+from\s+)?['"]([^'"]+)['"]/g,
-      /require\s*\(\s*['"]([^'"]+)['"]\s*\)/g,
-      /from\s+(\.[\w./]+)\s+import/g,
-    ];
+    if (sourceFiles.length === 0) {
+      return 'graph TD\n  A["No recognized source files detected"]';
+    }
+
+    // Build project-wide lookup tables for fast multi-language resolution
+    const pathSet = new Set(sourceFiles.map(f => this._normalize(f.name)));
+    const baseToPaths = new Map(); // 'userservice' -> ['src/services/UserService.java']
+    const nameWithExtToPaths = new Map(); // 'userservice.java' -> ['src/services/UserService.java']
+
+    for (const f of sourceFiles) {
+      const norm = this._normalize(f.name);
+      const filename = norm.split('/').pop();
+      const base = filename.replace(/\.[^.]+$/, '').toLowerCase();
+
+      if (!baseToPaths.has(base)) baseToPaths.set(base, []);
+      baseToPaths.get(base).push(norm);
+
+      const fnLower = filename.toLowerCase();
+      if (!nameWithExtToPaths.has(fnLower)) nameWithExtToPaths.set(fnLower, []);
+      nameWithExtToPaths.get(fnLower).push(norm);
+    }
 
     for (const file of sourceFiles) {
-      const fromBase = file.name.split('/').pop().replace(/\.[^.]+$/, '');
-      const fromId = this._nodeId(file.name);
+      const normFile = this._normalize(file.name);
+      const fromBase = normFile.split('/').pop().replace(/\.[^.]+$/, '');
+      const fromId = this._nodeId(normFile);
       nodeLabels.set(fromId, fromBase);
-      const fromDir = file.name.split('/').slice(0, -1).join('/');
+      const fromDir = normFile.split('/').slice(0, -1).join('/');
+      const ext = normFile.split('.').pop()?.toLowerCase();
+      const content = file.content || '';
 
-      for (const pattern of importPatterns) {
-        let match;
-        const re = new RegExp(pattern.source, pattern.flags);
-        while ((match = re.exec(file.content)) !== null) {
-          const importPath = match[1];
-          if (!importPath || (!importPath.startsWith('.') && !importPath.startsWith('/'))) continue;
+      const targets = this._extractImports(content, ext);
 
-          const resolved = this._resolve(fromDir, importPath);
+      for (const target of targets) {
+        const resolved = this._resolveTarget(normFile, fromDir, target, ext, pathSet, baseToPaths, nameWithExtToPaths);
+        if (resolved && resolved !== normFile) {
           const toBase = resolved.split('/').pop().replace(/\.[^.]+$/, '');
           const toId = this._nodeId(resolved);
           nodeLabels.set(toId, toBase);
-
-          if (fromId !== toId) {
-            edges.add(`${fromId} --> ${toId}`);
-          }
+          edges.add(`${fromId} --> ${toId}`);
         }
       }
     }
@@ -325,7 +343,8 @@ class LineageGenerator {
       return 'graph TD\n  A["No local file import relationships detected"]';
     }
 
-    const edgeList = [...edges].slice(0, 35);
+    // Cap output to 40 edges max for diagram clarity and rendering speed
+    const edgeList = [...edges].slice(0, 40);
     const activeNodes = [...nodeLabels.entries()]
       .filter(([id]) => edgeList.some(e => e.includes(id)))
       .map(([id, label]) => `  ${id}["${label}"]`);
@@ -334,25 +353,161 @@ class LineageGenerator {
     return lines.join('\n');
   }
 
+  _normalize(p) {
+    return (p || '').replace(/\\/g, '/').replace(/^\/+/, '');
+  }
+
   _nodeId(filePath) {
     return 'L_' + filePath.replace(/[^a-zA-Z0-9]/g, '_').slice(-30);
   }
 
-  _resolve(fromDir, importPath) {
-    if (importPath.startsWith('/')) return importPath.slice(1);
-    const parts = (fromDir ? fromDir + '/' + importPath : importPath).split('/');
-    const resolved = [];
-    for (const part of parts) {
-      if (part === '..') resolved.pop();
-      else if (part !== '.') resolved.push(part);
+  _extractImports(content, ext) {
+    const targets = [];
+
+    // JS / TS
+    if (['js', 'jsx', 'ts', 'tsx', 'mjs', 'cjs'].includes(ext)) {
+      const re = /(?:import\s+(?:[\w*{},\s]+\s+from\s+)?|export\s+(?:[\w*{},\s]+\s+from\s+)?|require\s*\(\s*|import\s*\(\s*)['"]([^'"]+)['"]/g;
+      let m;
+      while ((m = re.exec(content)) !== null) targets.push(m[1]);
     }
-    return resolved.join('/');
+    // Python
+    else if (ext === 'py') {
+      const fromRe = /^from\s+(\.?[\w.]+)\s+import/gm;
+      let m;
+      while ((m = fromRe.exec(content)) !== null) targets.push(m[1]);
+      const impRe = /^import\s+([\w.]+)/gm;
+      while ((m = impRe.exec(content)) !== null) targets.push(m[1]);
+    }
+    // Go
+    else if (ext === 'go') {
+      const singleRe = /import\s+['"]([^'"]+)['"]/g;
+      let m;
+      while ((m = singleRe.exec(content)) !== null) targets.push(m[1]);
+      const blockRe = /import\s*\(([\s\S]*?)\)/g;
+      while ((m = blockRe.exec(content)) !== null) {
+        const lineRe = /['"]([^'"]+)['"]/g;
+        let lm;
+        while ((lm = lineRe.exec(m[1])) !== null) targets.push(lm[1]);
+      }
+    }
+    // Rust
+    else if (ext === 'rs') {
+      const useRe = /use\s+(?:crate|super)?::?([\w:]+)/g;
+      let m;
+      while ((m = useRe.exec(content)) !== null) targets.push(m[1]);
+      const modRe = /mod\s+([a-zA-Z0-9_]+)\s*;/g;
+      while ((m = modRe.exec(content)) !== null) targets.push(m[1]);
+    }
+    // Java / Kotlin / Scala
+    else if (['java', 'kt', 'scala'].includes(ext)) {
+      const impRe = /import\s+(?:static\s+)?([a-zA-Z0-9_.]+);?/g;
+      let m;
+      while ((m = impRe.exec(content)) !== null) targets.push(m[1]);
+    }
+    // C#
+    else if (ext === 'cs') {
+      const usingRe = /using\s+(?:static\s+)?([a-zA-Z0-9_.]+);/g;
+      let m;
+      while ((m = usingRe.exec(content)) !== null) targets.push(m[1]);
+    }
+    // C / C++
+    else if (['c', 'cpp', 'cc', 'cxx', 'h', 'hpp'].includes(ext)) {
+      const incRe = /#include\s*["<]([^">]+)[">]/g;
+      let m;
+      while ((m = incRe.exec(content)) !== null) targets.push(m[1]);
+    }
+    // PHP
+    else if (ext === 'php') {
+      const reqRe = /(?:require|require_once|include|include_once)\s*\(?['"]([^'"]+)['"]\)?/g;
+      let m;
+      while ((m = reqRe.exec(content)) !== null) targets.push(m[1]);
+      const useRe = /use\s+([a-zA-Z0-9_\\]+);/g;
+      while ((m = useRe.exec(content)) !== null) targets.push(m[1]);
+    }
+    // Ruby
+    else if (ext === 'rb') {
+      const reqRe = /(?:require_relative|require)\s*['"]([^'"]+)['"]/g;
+      let m;
+      while ((m = reqRe.exec(content)) !== null) targets.push(m[1]);
+    }
+    // Swift
+    else if (ext === 'swift') {
+      const impRe = /import\s+([a-zA-Z0-9_]+)/g;
+      let m;
+      while ((m = impRe.exec(content)) !== null) targets.push(m[1]);
+    }
+
+    return targets;
+  }
+
+  _resolveTarget(fromFile, fromDir, target, sourceExt, pathSet, baseToPaths, nameWithExtToPaths) {
+    if (!target) return null;
+
+    // 1. Relative import (starts with . or /)
+    if (target.startsWith('.') || target.startsWith('/')) {
+      const cleanTarget = target.startsWith('/') ? target.slice(1) : target;
+      const combined = fromDir ? `${fromDir}/${cleanTarget}` : cleanTarget;
+      const parts = combined.split('/');
+      const stack = [];
+      for (const p of parts) {
+        if (p === '..') stack.pop();
+        else if (p !== '.' && p !== '') stack.push(p);
+      }
+      const candidate = stack.join('/');
+
+      // Exact match
+      if (pathSet.has(candidate)) return candidate;
+
+      // With source extension or common extensions
+      const extsToTry = [sourceExt, 'ts', 'tsx', 'js', 'jsx', 'py', 'go', 'rs', 'php', 'rb', 'h', 'hpp', 'cpp'];
+      for (const e of extsToTry) {
+        if (pathSet.has(`${candidate}.${e}`)) return `${candidate}.${e}`;
+        if (pathSet.has(`${candidate}/index.${e}`)) return `${candidate}/index.${e}`;
+        if (pathSet.has(`${candidate}/mod.${e}`)) return `${candidate}/mod.${e}`;
+      }
+      return null;
+    }
+
+    // 2. Direct filename match (e.g. C/C++ #include "logger.h" or Ruby require 'helper')
+    const targetFilename = target.split('/').pop()?.toLowerCase();
+    if (targetFilename && nameWithExtToPaths.has(targetFilename)) {
+      const matches = nameWithExtToPaths.get(targetFilename);
+      const sameDirMatch = matches.find(m => m.startsWith(fromDir));
+      return sameDirMatch || matches[0];
+    }
+
+    // 3. Dotted or scoped module (Python, Java, Kotlin, C#, Rust, PHP)
+    const normalizedTarget = target.replace(/::/g, '/').replace(/\\/g, '/').replace(/\./g, '/');
+    const segments = normalizedTarget.split('/').filter(Boolean);
+    if (segments.length === 0) return null;
+
+    const lastSegment = segments[segments.length - 1].toLowerCase();
+
+    if (baseToPaths.has(lastSegment)) {
+      const candidates = baseToPaths.get(lastSegment);
+      if (segments.length > 1) {
+        const secondLast = segments[segments.length - 2].toLowerCase();
+        const contextual = candidates.find(c => c.toLowerCase().includes(secondLast));
+        if (contextual) return contextual;
+      }
+      return candidates[0];
+    }
+
+    // 4. Go package or directory match (e.g. 'internal/auth' or 'pkg/db')
+    for (let i = 0; i < segments.length; i++) {
+      const subpath = segments.slice(i).join('/').toLowerCase();
+      for (const p of pathSet) {
+        if (p.toLowerCase().includes(subpath)) return p;
+      }
+    }
+
+    return null;
   }
 }
 
 // ─────────────────────────────────────────────
-// STAGE 5 — LLD Generator
-// Extracts class/function signatures into a Mermaid class diagram.
+// STAGE 5 — Polyglot LLD Generator (Class & Interface UML)
+// Extracts classes, structs, traits, interfaces, records, and relationships across 11+ languages.
 // ─────────────────────────────────────────────
 class LLDGenerator {
   constructor(files) {
@@ -361,119 +516,494 @@ class LLDGenerator {
 
   generate() {
     const classes = [];
+    const relationships = [];
+
+    const supportedExts = new Set([
+      'js', 'jsx', 'ts', 'tsx', 'mjs', 'cjs',
+      'py', 'java', 'go', 'rs', 'php', 'rb', 'kt', 'cs',
+      'cpp', 'c', 'cc', 'cxx', 'h', 'hpp', 'swift', 'scala'
+    ]);
 
     for (const file of this.files) {
-      const ext = file.name.split('.').pop().toLowerCase();
-      if (!['js', 'jsx', 'ts', 'tsx', 'py', 'java', 'cs', 'go'].includes(ext)) continue;
+      const ext = file.name.split('.').pop()?.toLowerCase();
+      if (!supportedExts.has(ext)) continue;
 
-      const extracted = this._extractFromFile(file.content, ext);
-      classes.push(...extracted);
+      const extracted = this._extractFromFile(file.content || '', ext, file.name);
+      classes.push(...extracted.classes);
+      relationships.push(...extracted.relationships);
 
-      if (classes.length >= 15) break;
+      if (classes.length >= 25) break;
     }
 
     if (classes.length === 0) {
-      return 'classDiagram\n  note "No explicit class or export function signatures detected"';
+      return 'classDiagram\n  note "No explicit class, struct, or interface declarations detected"';
+    }
+
+    // Deduplicate classes by name
+    const seenNames = new Set();
+    const uniqueClasses = [];
+    for (const cls of classes) {
+      const safeName = this._sanitizeName(cls.name);
+      if (!seenNames.has(safeName) && safeName.length > 0) {
+        seenNames.add(safeName);
+        uniqueClasses.push({ ...cls, safeName });
+      }
     }
 
     const lines = ['classDiagram'];
-    for (const cls of classes.slice(0, 15)) {
-      const safeName = cls.name.replace(/[^a-zA-Z0-9_]/g, '_');
-      lines.push(`  class ${safeName} {`);
-      for (const prop of cls.properties.slice(0, 5)) {
-        lines.push(`    ${this._sanitizeMember(prop)}`);
+
+    // Render classes
+    for (const cls of uniqueClasses.slice(0, 18)) {
+      lines.push(`  class ${cls.safeName} {`);
+      if (cls.stereotype) {
+        lines.push(`    <<${cls.stereotype}>>`);
       }
-      for (const method of cls.methods.slice(0, 6)) {
-        lines.push(`    ${this._sanitizeMember(method)}()`);
+      for (const prop of (cls.properties || []).slice(0, 6)) {
+        lines.push(`    +${this._sanitizeMember(prop)}`);
+      }
+      for (const method of (cls.methods || []).slice(0, 7)) {
+        lines.push(`    +${this._sanitizeMember(method)}()`);
       }
       lines.push('  }');
+    }
+
+    // Render valid relationships (inheritance <|-- and interface implementation <|..)
+    const validRels = relationships.filter(rel => {
+      const safeParent = this._sanitizeName(rel.parent);
+      const safeChild = this._sanitizeName(rel.child);
+      return seenNames.has(safeParent) && seenNames.has(safeChild) && safeParent !== safeChild;
+    });
+
+    const seenRels = new Set();
+    for (const rel of validRels.slice(0, 15)) {
+      const safeParent = this._sanitizeName(rel.parent);
+      const safeChild = this._sanitizeName(rel.child);
+      const arrow = rel.type === 'implements' ? '<|..' : '<|--';
+      const relKey = `${safeParent}_${arrow}_${safeChild}`;
+      if (!seenRels.has(relKey)) {
+        seenRels.add(relKey);
+        lines.push(`  ${safeParent} ${arrow} ${safeChild}`);
+      }
     }
 
     return lines.join('\n');
   }
 
-  _extractFromFile(content, ext) {
-    const result = [];
-
-    if (['js', 'jsx', 'ts', 'tsx'].includes(ext)) {
-      const classRe = /class\s+(\w+)/g;
-      let m;
-      while ((m = classRe.exec(content)) !== null) {
-        result.push({ name: m[1], methods: ['constructor', 'render'], properties: ['state', 'props'] });
-      }
-
-      const fnRe = /export\s+(?:default\s+)?(?:async\s+)?function\s+(\w+)/g;
-      while ((m = fnRe.exec(content)) !== null) {
-        result.push({ name: m[1], methods: ['execute'], properties: [] });
-      }
-    }
-
-    if (ext === 'py') {
-      const classRe = /^class\s+(\w+)/gm;
-      let m;
-      while ((m = classRe.exec(content)) !== null) {
-        result.push({ name: m[1], methods: ['__init__'], properties: [] });
-      }
-    }
-
-    if (ext === 'java' || ext === 'cs') {
-      const classRe = /(?:public|private)?\s*class\s+(\w+)/g;
-      let m;
-      while ((m = classRe.exec(content)) !== null) {
-        result.push({ name: m[1], methods: ['main'], properties: [] });
-      }
-    }
-
-    if (ext === 'go') {
-      const structRe = /type\s+(\w+)\s+struct/g;
-      let m;
-      while ((m = structRe.exec(content)) !== null) {
-        result.push({ name: m[1], methods: [], properties: [] });
-      }
-    }
-
-    return result;
+  _sanitizeName(str) {
+    return (str || '').replace(/[^a-zA-Z0-9_]/g, '_').slice(0, 32);
   }
 
   _sanitizeMember(name) {
-    return name.replace(/[^a-zA-Z0-9_]/g, '_').slice(0, 25);
+    return (name || '').replace(/[^a-zA-Z0-9_]/g, '_').slice(0, 24);
+  }
+
+  _extractFromFile(content, ext, filename) {
+    const classes = [];
+    const relationships = [];
+
+    // 1. JavaScript / TypeScript
+    if (['js', 'jsx', 'ts', 'tsx', 'mjs', 'cjs'].includes(ext)) {
+      const classRe = /class\s+([a-zA-Z0-9_]+)(?:\s+extends\s+([a-zA-Z0-9_]+))?(?:\s+implements\s+([a-zA-Z0-9_,\s]+))?\s*\{/g;
+      let m;
+      while ((m = classRe.exec(content)) !== null) {
+        const className = m[1];
+        const parent = m[2];
+        const ifaces = m[3] ? m[3].split(',').map(s => s.trim()) : [];
+        if (parent) relationships.push({ parent, child: className, type: 'extends' });
+        ifaces.forEach(iface => {
+          if (iface) relationships.push({ parent: iface, child: className, type: 'implements' });
+        });
+
+        const methods = ['constructor'];
+        const methodRe = /(?:async\s+)?(?:static\s+)?([a-zA-Z0-9_]+)\s*\([^)]*\)\s*\{/g;
+        let mm;
+        while ((mm = methodRe.exec(content)) !== null) {
+          if (!['if', 'for', 'while', 'switch', 'catch', 'function'].includes(mm[1])) {
+            methods.push(mm[1]);
+          }
+        }
+
+        const properties = [];
+        const propRe = /(?:readonly\s+)?([a-zA-Z0-9_]+)\s*(?::\s*[^=;]+)?\s*=/g;
+        while ((mm = propRe.exec(content)) !== null) {
+          if (!['const', 'let', 'var'].includes(mm[1])) properties.push(mm[1]);
+        }
+
+        classes.push({ name: className, stereotype: null, methods: [...new Set(methods)], properties: [...new Set(properties)] });
+      }
+
+      // TypeScript Interfaces
+      const ifaceRe = /interface\s+([a-zA-Z0-9_]+)(?:\s+extends\s+([a-zA-Z0-9_]+))?\s*\{([^}]*)\}/g;
+      while ((m = ifaceRe.exec(content)) !== null) {
+        const name = m[1];
+        if (m[2]) relationships.push({ parent: m[2], child: name, type: 'extends' });
+        const body = m[3] || '';
+        const methods = [];
+        const properties = [];
+        body.split(';').forEach(line => {
+          const trimmed = line.trim();
+          if (trimmed.includes('(')) {
+            const fnMatch = trimmed.match(/^([a-zA-Z0-9_]+)\s*\(/);
+            if (fnMatch) methods.push(fnMatch[1]);
+          } else {
+            const propMatch = trimmed.match(/^([a-zA-Z0-9_]+)\s*:/);
+            if (propMatch) properties.push(propMatch[1]);
+          }
+        });
+        classes.push({ name, stereotype: 'interface', methods, properties });
+      }
+
+      if (classes.length === 0) {
+        const fnRe = /export\s+(?:default\s+)?(?:async\s+)?function\s+([a-zA-Z0-9_]+)/g;
+        const exportedFns = [];
+        while ((m = fnRe.exec(content)) !== null) exportedFns.push(m[1]);
+        if (exportedFns.length > 0) {
+          const modName = filename.split('/').pop().replace(/\.[^.]+$/, '');
+          classes.push({ name: modName, stereotype: 'module', methods: exportedFns, properties: [] });
+        }
+      }
+    }
+
+    // 2. Python
+    else if (ext === 'py') {
+      const classRe = /^class\s+([a-zA-Z0-9_]+)(?:\(([^)]+)\))?:/gm;
+      let m;
+      while ((m = classRe.exec(content)) !== null) {
+        const name = m[1];
+        const base = m[2]?.trim();
+        if (base && base !== 'object') {
+          relationships.push({ parent: base.split('.').pop(), child: name, type: 'extends' });
+        }
+
+        const methods = [];
+        const properties = [];
+        const methodRe = /^\s+def\s+([a-zA-Z0-9_]+)\s*\(/gm;
+        let mm;
+        while ((mm = methodRe.exec(content)) !== null) {
+          methods.push(mm[1]);
+        }
+        const propRe = /self\.([a-zA-Z0-9_]+)\s*=/g;
+        while ((mm = propRe.exec(content)) !== null) {
+          properties.push(mm[1]);
+        }
+
+        classes.push({ name, stereotype: null, methods: [...new Set(methods)], properties: [...new Set(properties)] });
+      }
+    }
+
+    // 3. Go
+    else if (ext === 'go') {
+      const structRe = /type\s+([a-zA-Z0-9_]+)\s+struct\s*\{([^}]*)\}/g;
+      let m;
+      while ((m = structRe.exec(content)) !== null) {
+        const name = m[1];
+        const body = m[2] || '';
+        const properties = [];
+        body.split('\n').forEach(line => {
+          const trimmed = line.trim();
+          const fieldMatch = trimmed.match(/^([a-zA-Z0-9_]+)\s+[A-Za-z0-9_*\[\]]+/);
+          if (fieldMatch && !trimmed.startsWith('//')) properties.push(fieldMatch[1]);
+        });
+        classes.push({ name, stereotype: 'struct', methods: [], properties });
+      }
+
+      const ifaceRe = /type\s+([a-zA-Z0-9_]+)\s+interface\s*\{([^}]*)\}/g;
+      while ((m = ifaceRe.exec(content)) !== null) {
+        const name = m[1];
+        const body = m[2] || '';
+        const methods = [];
+        body.split('\n').forEach(line => {
+          const match = line.trim().match(/^([a-zA-Z0-9_]+)\s*\(/);
+          if (match) methods.push(match[1]);
+        });
+        classes.push({ name, stereotype: 'interface', methods, properties: [] });
+      }
+
+      const receiverRe = /func\s*\(\s*(?:\w+\s+)?\*?([a-zA-Z0-9_]+)\s*\)\s*([a-zA-Z0-9_]+)\s*\(/g;
+      while ((m = receiverRe.exec(content)) !== null) {
+        const structName = m[1];
+        const methodName = m[2];
+        const target = classes.find(c => c.name === structName);
+        if (target) target.methods.push(methodName);
+      }
+    }
+
+    // 4. Rust
+    else if (ext === 'rs') {
+      const structRe = /(?:pub\s+)?struct\s+([a-zA-Z0-9_]+)\s*(?:\{([^}]*)\})?/g;
+      let m;
+      while ((m = structRe.exec(content)) !== null) {
+        const name = m[1];
+        const body = m[2] || '';
+        const properties = [];
+        body.split(',').forEach(field => {
+          const fm = field.trim().match(/(?:pub\s+)?([a-zA-Z0-9_]+)\s*:/);
+          if (fm) properties.push(fm[1]);
+        });
+        classes.push({ name, stereotype: 'struct', methods: [], properties });
+      }
+
+      const enumRe = /(?:pub\s+)?enum\s+([a-zA-Z0-9_]+)\s*\{([^}]*)\}/g;
+      while ((m = enumRe.exec(content)) !== null) {
+        const name = m[1];
+        const body = m[2] || '';
+        const variants = body.split(',').map(v => v.trim().split(/[\s(]/)[0]).filter(v => v && !v.startsWith('//'));
+        classes.push({ name, stereotype: 'enum', methods: [], properties: variants });
+      }
+
+      const traitRe = /(?:pub\s+)?trait\s+([a-zA-Z0-9_]+)\s*\{([^}]*)\}/g;
+      while ((m = traitRe.exec(content)) !== null) {
+        const name = m[1];
+        const body = m[2] || '';
+        const methods = [];
+        const fnRe = /fn\s+([a-zA-Z0-9_]+)\s*\(/g;
+        let fnMatch;
+        while ((fnMatch = fnRe.exec(body)) !== null) methods.push(fnMatch[1]);
+        classes.push({ name, stereotype: 'trait', methods, properties: [] });
+      }
+
+      const implRe = /impl(?:\s+([a-zA-Z0-9_]+)\s+for)?\s+([a-zA-Z0-9_]+)\s*\{([\s\S]*?)\}/g;
+      while ((m = implRe.exec(content)) !== null) {
+        const traitName = m[1];
+        const structName = m[2];
+        const body = m[3] || '';
+        if (traitName) relationships.push({ parent: traitName, child: structName, type: 'implements' });
+
+        const methods = [];
+        const fnRe = /(?:pub\s+)?fn\s+([a-zA-Z0-9_]+)\s*\(/g;
+        let fnMatch;
+        while ((fnMatch = fnRe.exec(body)) !== null) methods.push(fnMatch[1]);
+
+        let target = classes.find(c => c.name === structName);
+        if (!target) {
+          target = { name: structName, stereotype: 'struct', methods: [], properties: [] };
+          classes.push(target);
+        }
+        target.methods.push(...methods);
+      }
+    }
+
+    // 5. Java / Kotlin
+    else if (['java', 'kt'].includes(ext)) {
+      const typeRe = /(?:public|protected|private|abstract|static|data|\s)*\b(class|interface|record|enum)\s+([a-zA-Z0-9_]+)(?:\s+extends\s+([a-zA-Z0-9_]+))?(?:\s+implements\s+([a-zA-Z0-9_,\s]+))?(?:\s*:\s*([a-zA-Z0-9_,\s()]+))?/g;
+      let m;
+      while ((m = typeRe.exec(content)) !== null) {
+        const kind = m[1];
+        const name = m[2];
+        const parent = m[3] || (m[5] ? m[5].split(',')[0].replace(/\([^)]*\)/, '').trim() : null);
+        const ifaces = m[4] ? m[4].split(',').map(s => s.trim()) : [];
+
+        if (parent && parent !== 'Object') relationships.push({ parent, child: name, type: 'extends' });
+        ifaces.forEach(iface => {
+          if (iface) relationships.push({ parent: iface, child: name, type: 'implements' });
+        });
+
+        const methods = [];
+        const methodRe = /(?:public|protected|private|fun|\s)*(?:static\s+)?(?:final\s+)?(?:[\w<>\[\],]+\s+)?([a-zA-Z0-9_]+)\s*\([^)]*\)\s*(?:\{|throws)/g;
+        let mm;
+        while ((mm = methodRe.exec(content)) !== null) {
+          const fn = mm[1];
+          if (!['if', 'for', 'while', 'switch', 'catch', 'class', 'interface', 'return', 'super', 'this'].includes(fn)) {
+            methods.push(fn);
+          }
+        }
+
+        const properties = [];
+        const fieldRe = /(?:private|protected|public|val|var)\s+(?:final\s+)?(?:[\w<>\[\],]+\s+)?([a-zA-Z0-9_]+)\s*[;=:]/g;
+        while ((mm = fieldRe.exec(content)) !== null) {
+          properties.push(mm[1]);
+        }
+
+        classes.push({ name, stereotype: kind === 'class' ? null : kind, methods: [...new Set(methods)], properties: [...new Set(properties)] });
+      }
+    }
+
+    // 6. C# (.cs)
+    else if (ext === 'cs') {
+      const classRe = /(?:public|internal|private|protected|\s)*\b(class|interface|struct|record)\s+([a-zA-Z0-9_]+)(?:\s*:\s*([a-zA-Z0-9_,\s]+))?/g;
+      let m;
+      while ((m = classRe.exec(content)) !== null) {
+        const kind = m[1];
+        const name = m[2];
+        const bases = m[3] ? m[3].split(',').map(s => s.trim()) : [];
+        if (bases.length > 0) {
+          relationships.push({ parent: bases[0], child: name, type: bases[0].startsWith('I') ? 'implements' : 'extends' });
+        }
+
+        const methods = [];
+        const methodRe = /(?:public|protected|private|\s)*(?:async\s+)?(?:virtual\s+|override\s+|static\s+)?(?:[\w<>\[\],?]+\s+)+([a-zA-Z0-9_]+)\s*\([^)]*\)/g;
+        let mm;
+        while ((mm = methodRe.exec(content)) !== null) {
+          if (!['if', 'for', 'while', 'switch', 'catch', 'using', 'return', 'get', 'set'].includes(mm[1])) {
+            methods.push(mm[1]);
+          }
+        }
+
+        const properties = [];
+        const propRe = /(?:public|protected|private)\s+[\w<>\[\],?]+\s+([a-zA-Z0-9_]+)\s*\{\s*get/g;
+        while ((mm = propRe.exec(content)) !== null) properties.push(mm[1]);
+
+        classes.push({ name, stereotype: kind === 'class' ? null : kind, methods: [...new Set(methods)], properties: [...new Set(properties)] });
+      }
+    }
+
+    // 7. C / C++
+    else if (['c', 'cpp', 'cc', 'cxx', 'h', 'hpp'].includes(ext)) {
+      const classRe = /\b(class|struct)\s+([a-zA-Z0-9_]+)(?:\s*:\s*(?:public|protected|private)\s+([a-zA-Z0-9_]+))?\s*\{/g;
+      let m;
+      while ((m = classRe.exec(content)) !== null) {
+        const kind = m[1];
+        const name = m[2];
+        const parent = m[3];
+        if (parent) relationships.push({ parent, child: name, type: 'extends' });
+
+        const methods = [];
+        const methodRe = /(?:virtual\s+)?(?:[\w:*&<>]+\s+)+([a-zA-Z0-9_]+)\s*\([^)]*\)\s*(?:const\s*)?(?:=\s*0\s*)?[;{]/g;
+        let mm;
+        while ((mm = methodRe.exec(content)) !== null) {
+          if (!['if', 'for', 'while', 'switch', 'catch', 'return'].includes(mm[1])) {
+            methods.push(mm[1]);
+          }
+        }
+
+        classes.push({ name, stereotype: kind === 'class' ? null : kind, methods: [...new Set(methods)], properties: [] });
+      }
+    }
+
+    // 8. PHP
+    else if (ext === 'php') {
+      const classRe = /\b(class|interface|trait)\s+([a-zA-Z0-9_]+)(?:\s+extends\s+([a-zA-Z0-9_]+))?(?:\s+implements\s+([a-zA-Z0-9_,\s]+))?/g;
+      let m;
+      while ((m = classRe.exec(content)) !== null) {
+        const kind = m[1];
+        const name = m[2];
+        const parent = m[3];
+        const ifaces = m[4] ? m[4].split(',').map(s => s.trim()) : [];
+        if (parent) relationships.push({ parent, child: name, type: 'extends' });
+        ifaces.forEach(iface => {
+          if (iface) relationships.push({ parent: iface, child: name, type: 'implements' });
+        });
+
+        const methods = [];
+        const methodRe = /(?:public|protected|private|\s)*(?:static\s+)?function\s+([a-zA-Z0-9_]+)\s*\(/g;
+        let mm;
+        while ((mm = methodRe.exec(content)) !== null) methods.push(mm[1]);
+
+        const properties = [];
+        const propRe = /(?:public|protected|private)\s+(?:[\w?]+\s+)?\$([a-zA-Z0-9_]+)/g;
+        while ((mm = propRe.exec(content)) !== null) properties.push(mm[1]);
+
+        classes.push({ name, stereotype: kind === 'class' ? null : kind, methods: [...new Set(methods)], properties: [...new Set(properties)] });
+      }
+    }
+
+    // 9. Ruby
+    else if (ext === 'rb') {
+      const classRe = /\b(class|module)\s+([a-zA-Z0-9_]+)(?:\s*<\s*([a-zA-Z0-9_]+))?/g;
+      let m;
+      while ((m = classRe.exec(content)) !== null) {
+        const kind = m[1];
+        const name = m[2];
+        const parent = m[3];
+        if (parent) relationships.push({ parent, child: name, type: 'extends' });
+
+        const methods = [];
+        const methodRe = /def\s+(?:self\.)?([a-zA-Z0-9_?!]+)/g;
+        let mm;
+        while ((mm = methodRe.exec(content)) !== null) methods.push(mm[1]);
+
+        const properties = [];
+        const propRe = /attr_(?:accessor|reader|writer)\s+([:\w,\s]+)/g;
+        while ((mm = propRe.exec(content)) !== null) {
+          mm[1].split(',').forEach(p => {
+            const clean = p.trim().replace(/^:/, '');
+            if (clean) properties.push(clean);
+          });
+        }
+
+        classes.push({ name, stereotype: kind === 'class' ? null : kind, methods: [...new Set(methods)], properties: [...new Set(properties)] });
+      }
+    }
+
+    // 10. Swift
+    else if (ext === 'swift') {
+      const typeRe = /(?:public\s+|open\s+|internal\s+)?\b(class|struct|protocol)\s+([a-zA-Z0-9_]+)(?:\s*:\s*([a-zA-Z0-9_,\s]+))?/g;
+      let m;
+      while ((m = typeRe.exec(content)) !== null) {
+        const kind = m[1];
+        const name = m[2];
+        const bases = m[3] ? m[3].split(',').map(s => s.trim()) : [];
+        if (bases.length > 0) {
+          relationships.push({ parent: bases[0], child: name, type: 'extends' });
+        }
+
+        const methods = [];
+        const methodRe = /func\s+([a-zA-Z0-9_]+)\s*\(/g;
+        let mm;
+        while ((mm = methodRe.exec(content)) !== null) methods.push(mm[1]);
+
+        const properties = [];
+        const propRe = /(?:var|let)\s+([a-zA-Z0-9_]+)\s*:/g;
+        while ((mm = propRe.exec(content)) !== null) properties.push(mm[1]);
+
+        classes.push({ name, stereotype: kind === 'class' ? null : kind, methods: [...new Set(methods)], properties: [...new Set(properties)] });
+      }
+    }
+
+    return { classes, relationships };
   }
 }
 
 // ─────────────────────────────────────────────
-// STAGE 7 — JS/TS Per-File Complexity Scorer
-// Estimates file-level complexity by counting branching keywords.
+// STAGE 7 — Polyglot Per-File Cyclomatic Complexity Scorer
+// Measures branching complexity across JS/TS, Python, Go, Rust, Java, Kotlin, C#, C/C++, PHP, Ruby, and Swift.
 // ─────────────────────────────────────────────
 class ComplexityScanner {
   constructor(files) { this.files = files; }
 
   scan() {
-    const srcExts = new Set(['js', 'jsx', 'ts', 'tsx', 'mjs', 'cjs']);
+    const srcExts = new Set([
+      'js', 'jsx', 'ts', 'tsx', 'mjs', 'cjs',
+      'py', 'java', 'go', 'rs', 'php', 'rb', 'kt', 'cs',
+      'cpp', 'c', 'cc', 'cxx', 'h', 'hpp', 'swift', 'scala'
+    ]);
     const byFile = [];
 
     for (const file of this.files) {
       const ext = file.name.split('.').pop()?.toLowerCase();
       if (!srcExts.has(ext)) continue;
 
-      // Strip comment blocks and string literals to reduce false positives
-      const content = (file.content || '')
-        .replace(/\/\/[^\n]*/g, '')
-        .replace(/\/\*[\s\S]*?\*\//g, '')
+      let content = file.content || '';
+
+      // Strip comment blocks according to language
+      if (ext === 'py' || ext === 'rb') {
+        content = content
+          .replace(/#.*$/gm, '')
+          .replace(/"""[\s\S]*?"""/g, '')
+          .replace(/'''[\s\S]*?'''/g, '');
+      } else {
+        content = content
+          .replace(/\/\/[^\n]*/g, '')
+          .replace(/\/\*[\s\S]*?\*\//g, '');
+      }
+
+      // Strip string literals
+      content = content
         .replace(/'[^'\\]*(?:\\.[^'\\]*)*'/g, "''")
         .replace(/"[^"\\]*(?:\\.[^"\\]*)*"/g, '""')
         .replace(/`[^`\\]*(?:\\.[^`\\]*)*`/g, '``');
 
       const count = (re) => (content.match(re) || []).length;
 
-      const ifCount     = count(/\bif\s*\(/g);
-      const elseIfCount = count(/\belse\s+if\s*\(/g);
-      const forCount    = count(/\bfor\s*\(/g);
-      const whileCount  = count(/\bwhile\s*\(/g);
-      const switchCount = count(/\bswitch\s*\(/g);
-      const catchCount  = count(/\bcatch\s*[({]/g);
+      const ifCount     = count(/\bif\b/g);
+      const elseIfCount = count(/\b(?:else\s+if|elif|elsif)\b/g);
+      const forCount    = count(/\b(?:for|foreach)\b/g);
+      const whileCount  = count(/\bwhile\b/g);
+      const switchCount = count(/\b(?:switch|match)\b/g);
+      const catchCount  = count(/\b(?:catch|except|rescue)\b/g);
       const ternary     = count(/\?(?![?.=])/g);
-      const andOp       = count(/&&/g);
-      const orOp        = count(/\|\|/g);
+      const andOp       = count(/(?:&&|\band\b)/g);
+      const orOp        = count(/(?:\|\||\bor\b)/g);
 
       const complexity = 1 + ifCount + elseIfCount + forCount + whileCount +
                          switchCount + catchCount + ternary + andOp + orOp;
@@ -490,57 +1020,59 @@ class ComplexityScanner {
     byFile.sort((a, b) => b.complexity - a.complexity);
 
     return {
-      byFile: byFile.slice(0, 20),
+      byFile: byFile.slice(0, 25),
       highComplexityCount: byFile.filter(f => f.severity === 'Critical' || f.severity === 'High').length,
     };
   }
 }
 
 // ─────────────────────────────────────────────
-// STAGE 8 — JS/TS Circular Dependency Detector
-// DFS cycle detection on the relative-import adjacency graph.
+// STAGE 8 — Polyglot Circular Dependency Detector
+// Universal DFS cycle detection on multi-language project dependency graph.
 // ─────────────────────────────────────────────
-class JsCircularDepDetector {
+class PolyglotCircularDepDetector {
   constructor(files) { this.files = files; }
 
   detect() {
-    const srcExts = new Set(['js', 'jsx', 'ts', 'tsx', 'mjs', 'cjs']);
-    const sourceFiles = this.files.filter(f => srcExts.has(f.name.split('.').pop()?.toLowerCase()));
+    const lineage = new LineageGenerator(this.files);
+    const sourceFiles = lineage.files.filter(f => {
+      const ext = f.name.split('.').pop()?.toLowerCase();
+      return ['js', 'jsx', 'ts', 'tsx', 'py', 'go', 'rs', 'java', 'cs', 'cpp', 'c', 'php', 'rb', 'kt'].includes(ext);
+    });
 
-    // Base-name to full path map for resolution
-    const fileBaseMap = new Map();
+    const pathSet = new Set(sourceFiles.map(f => lineage._normalize(f.name)));
+    const baseToPaths = new Map();
+    const nameWithExtToPaths = new Map();
+
     for (const f of sourceFiles) {
-      const base = f.name.split('/').pop().replace(/\.[^.]+$/, '');
-      fileBaseMap.set(base, f.name);
+      const norm = lineage._normalize(f.name);
+      const filename = norm.split('/').pop();
+      const base = filename.replace(/\.[^.]+$/, '').toLowerCase();
+      if (!baseToPaths.has(base)) baseToPaths.set(base, []);
+      baseToPaths.get(base).push(norm);
+
+      const fnLower = filename.toLowerCase();
+      if (!nameWithExtToPaths.has(fnLower)) nameWithExtToPaths.set(fnLower, []);
+      nameWithExtToPaths.get(fnLower).push(norm);
     }
 
-    const importPatterns = [
-      /import\s+(?:[\w*{},\s]+\s+from\s+)?['"]([^'"]+)['"]/g,
-      /require\s*\(\s*['"]([^'"]+)['"]\s*\)/g,
-    ];
-
-    // Build adjacency list
     const graph = new Map();
-    for (const f of sourceFiles) graph.set(f.name, []);
+    for (const f of sourceFiles) graph.set(lineage._normalize(f.name), new Set());
 
-    for (const f of sourceFiles) {
-      const fromDir = f.name.split('/').slice(0, -1).join('/');
-      for (const pat of importPatterns) {
-        const re = new RegExp(pat.source, pat.flags);
-        let m;
-        while ((m = re.exec(f.content || '')) !== null) {
-          const imp = m[1];
-          if (!imp.startsWith('.') && !imp.startsWith('/')) continue;
-          const resolved = this._resolve(fromDir, imp);
-          const base = resolved.split('/').pop().replace(/\.[^.]+$/, '');
-          const actual = fileBaseMap.get(base);
-          if (actual && actual !== f.name) graph.get(f.name).push(actual);
+    for (const file of sourceFiles) {
+      const normFile = lineage._normalize(file.name);
+      const fromDir = normFile.split('/').slice(0, -1).join('/');
+      const ext = normFile.split('.').pop()?.toLowerCase();
+      const targets = lineage._extractImports(file.content || '', ext);
+
+      for (const t of targets) {
+        const resolved = lineage._resolveTarget(normFile, fromDir, t, ext, pathSet, baseToPaths, nameWithExtToPaths);
+        if (resolved && resolved !== normFile) {
+          graph.get(normFile)?.add(resolved);
         }
       }
-      graph.set(f.name, [...new Set(graph.get(f.name))]);
     }
 
-    // DFS cycle detection with recursion stack
     const cycles = [];
     const seenKeys = new Set();
     const visited = new Set();
@@ -582,18 +1114,8 @@ class JsCircularDepDetector {
 
     return cycles.slice(0, 10);
   }
-
-  _resolve(fromDir, importPath) {
-    if (importPath.startsWith('/')) return importPath.slice(1);
-    const parts = (fromDir ? `${fromDir}/${importPath}` : importPath).split('/');
-    const resolved = [];
-    for (const p of parts) {
-      if (p === '..') resolved.pop();
-      else if (p !== '.') resolved.push(p);
-    }
-    return resolved.join('/');
-  }
 }
+const JsCircularDepDetector = PolyglotCircularDepDetector;
 
 // ─────────────────────────────────────────────
 // STAGE 9 — Comment-to-Code Ratio Analyzer
@@ -705,61 +1227,62 @@ class LargeFileDetector {
 }
 
 // ─────────────────────────────────────────────
-// STAGE 11 — Import Fan-Out / Coupling Analyzer
-// Measures outDegree (imports) and inDegree (imported-by) per JS/TS file.
+// STAGE 11 — Polyglot Coupling & Fan-Out Analyzer
+// Measures outDegree (dependencies) and inDegree (dependents) across all supported languages.
 // ─────────────────────────────────────────────
 class CouplingAnalyzer {
   constructor(files) { this.files = files; }
 
   analyze() {
-    const srcExts = new Set(['js', 'jsx', 'ts', 'tsx', 'mjs', 'cjs']);
-    const sourceFiles = this.files.filter(f => srcExts.has(f.name.split('.').pop()?.toLowerCase()));
+    const lineage = new LineageGenerator(this.files);
+    const sourceFiles = lineage.files.filter(f => {
+      const ext = f.name.split('.').pop()?.toLowerCase();
+      return ['js', 'jsx', 'ts', 'tsx', 'py', 'go', 'rs', 'java', 'cs', 'cpp', 'c', 'php', 'rb', 'kt'].includes(ext);
+    });
 
-    const fileBaseMap = new Map();
+    const pathSet = new Set(sourceFiles.map(f => lineage._normalize(f.name)));
+    const baseToPaths = new Map();
+    const nameWithExtToPaths = new Map();
+
     for (const f of sourceFiles) {
-      const base = f.name.split('/').pop().replace(/\.[^.]+$/, '');
-      fileBaseMap.set(base, f.name);
-    }
+      const norm = lineage._normalize(f.name);
+      const filename = norm.split('/').pop();
+      const base = filename.replace(/\.[^.]+$/, '').toLowerCase();
+      if (!baseToPaths.has(base)) baseToPaths.set(base, []);
+      baseToPaths.get(base).push(norm);
 
-    const importPatterns = [
-      /import\s+(?:[\w*{},\s]+\s+from\s+)?['"]([^'"]+)['"]/g,
-      /require\s*\(\s*['"]([^'"]+)['"]\s*\)/g,
-    ];
+      const fnLower = filename.toLowerCase();
+      if (!nameWithExtToPaths.has(fnLower)) nameWithExtToPaths.set(fnLower, []);
+      nameWithExtToPaths.get(fnLower).push(norm);
+    }
 
     const outMap = new Map();
-    const inMap  = new Map();
+    const inMap = new Map();
     for (const f of sourceFiles) {
-      outMap.set(f.name, new Set());
-      inMap.set(f.name, new Set());
+      const norm = lineage._normalize(f.name);
+      outMap.set(norm, new Set());
+      inMap.set(norm, new Set());
     }
 
-    for (const f of sourceFiles) {
-      const fromDir = f.name.split('/').slice(0, -1).join('/');
-      for (const pat of importPatterns) {
-        const re = new RegExp(pat.source, pat.flags);
-        let m;
-        while ((m = re.exec(f.content || '')) !== null) {
-          const imp = m[1];
-          if (!imp.startsWith('.') && !imp.startsWith('/')) continue;
-          const parts = (fromDir ? `${fromDir}/${imp}` : imp).split('/');
-          const resolved = [];
-          for (const p of parts) {
-            if (p === '..') resolved.pop();
-            else if (p !== '.') resolved.push(p);
-          }
-          const base = resolved.pop()?.replace(/\.[^.]+$/, '') || '';
-          const actual = fileBaseMap.get(base);
-          if (actual && actual !== f.name) {
-            outMap.get(f.name).add(actual);
-            inMap.get(actual)?.add(f.name);
-          }
+    for (const file of sourceFiles) {
+      const normFile = lineage._normalize(file.name);
+      const fromDir = normFile.split('/').slice(0, -1).join('/');
+      const ext = normFile.split('.').pop()?.toLowerCase();
+      const targets = lineage._extractImports(file.content || '', ext);
+
+      for (const t of targets) {
+        const resolved = lineage._resolveTarget(normFile, fromDir, t, ext, pathSet, baseToPaths, nameWithExtToPaths);
+        if (resolved && resolved !== normFile) {
+          outMap.get(normFile)?.add(resolved);
+          inMap.get(resolved)?.add(normFile);
         }
       }
     }
 
     const couplingMap = sourceFiles.map(f => {
-      const outDegree = outMap.get(f.name)?.size || 0;
-      const inDegree  = inMap.get(f.name)?.size || 0;
+      const norm = lineage._normalize(f.name);
+      const outDegree = outMap.get(norm)?.size || 0;
+      const inDegree  = inMap.get(norm)?.size || 0;
       return {
         file: f.name,
         shortName: f.name.split('/').pop(),
@@ -782,17 +1305,16 @@ class CouplingAnalyzer {
 }
 
 // ─────────────────────────────────────────────
-// STAGE 12 — JS/TS Security Scanner
-// Detects hardcoded secrets, unsafe patterns, and env var leakage.
+// STAGE 12 — Polyglot Security Scanner
+// Detects hardcoded secrets, unsafe patterns, and injection vectors across all major languages.
 // ─────────────────────────────────────────────
-class JsSecurityScanner {
+class PolyglotSecurityScanner {
   constructor(files) { this.files = files; }
 
   scan() {
-    const jsExts = new Set(['js', 'jsx', 'ts', 'tsx', 'mjs', 'cjs']);
     const issues = [];
 
-    const rules = [
+    const universalRules = [
       {
         re: /(?:api[_-]?key|secret[_-]?key|access[_-]?token|jwt[_-]?secret|client[_-]?secret|auth[_-]?token)\s*[:=]\s*['"`][A-Za-z0-9+/=_\-]{12,}['"`]/gi,
         severity: 'High',
@@ -804,50 +1326,71 @@ class JsSecurityScanner {
         rule: 'Hardcoded Password Value',
       },
       {
-        re: /DATABASE_URL\s*[:=]\s*['"`][^'"`\s]{10,}['"`]/gi,
+        re: /(?:DATABASE_URL|DB_PASSWORD|REDIS_URL)\s*[:=]\s*['"`][^'"`\s]{8,}['"`]/gi,
         severity: 'High',
-        rule: 'Hardcoded Database Connection String',
+        rule: 'Hardcoded Database / Infrastructure Credential',
       },
       {
-        re: /eval\s*\([^)]{1,200}\)/g,
-        severity: 'High',
-        rule: 'Unsafe eval() Usage',
-      },
-      {
-        re: /\.innerHTML\s*=[^=]/g,
+        re: /rejectUnauthorized\s*:\s*false|InsecureSkipVerify\s*:\s*true|ServerCertificateCustomValidationCallback/gi,
         severity: 'Medium',
-        rule: 'Direct innerHTML Assignment (XSS Risk)',
-      },
-      {
-        re: /dangerouslySetInnerHTML\s*=/g,
-        severity: 'Medium',
-        rule: 'dangerouslySetInnerHTML Usage (XSS Risk)',
-      },
-      {
-        re: /rejectUnauthorized\s*:\s*false/g,
-        severity: 'Medium',
-        rule: 'SSL Certificate Validation Disabled',
-      },
-      {
-        re: /cors\s*\(\s*\{\s*origin\s*:\s*['"`]\*['"`]/g,
-        severity: 'Low',
-        rule: 'Permissive CORS: origin "*"',
-      },
-      {
-        re: /localStorage\.setItem\s*\([^,]+,\s*(?:JSON\.stringify\s*\()?\s*(?:token|password|secret|key)/gi,
-        severity: 'Medium',
-        rule: 'Sensitive Data Stored in localStorage',
+        rule: 'TLS/SSL Certificate Validation Disabled',
       },
     ];
 
+    const langRules = {
+      js: [
+        { re: /eval\s*\([^)]{1,200}\)/g, severity: 'High', rule: 'Unsafe eval() Execution' },
+        { re: /\.innerHTML\s*=[^=]/g, severity: 'Medium', rule: 'Direct innerHTML Assignment (XSS Risk)' },
+        { re: /dangerouslySetInnerHTML\s*=/g, severity: 'Medium', rule: 'dangerouslySetInnerHTML Usage (XSS Risk)' },
+        { re: /cors\s*\(\s*\{\s*origin\s*:\s*['"`]\*['"`]/g, severity: 'Low', rule: 'Permissive CORS: origin "*"' },
+        { re: /localStorage\.setItem\s*\([^,]+,\s*(?:JSON\.stringify\s*\()?\s*(?:token|password|secret|key)/gi, severity: 'Medium', rule: 'Sensitive Data Stored in localStorage' },
+      ],
+      py: [
+        { re: /pickle\.loads?\s*\(/g, severity: 'High', rule: 'Unsafe Deserialization via pickle (RCE Risk)' },
+        { re: /yaml\.load\s*\([^,)]+,\s*Loader\s*=\s*(?:yaml\.)?(?:UnsafeLoader|Loader)/g, severity: 'High', rule: 'Unsafe YAML Loading (RCE Risk)' },
+        { re: /subprocess\.(?:Popen|call|run|check_output)\s*\([^)]*shell\s*=\s*True/g, severity: 'High', rule: 'Subprocess Invocation with shell=True (Command Injection)' },
+        { re: /(?:cursor|db)\.execute\s*\(\s*f?['"][^'"]*%[a-zA-Z]/g, severity: 'High', rule: 'SQL Injection via String Formatting' },
+        { re: /eval\s*\([^)]{1,200}\)|exec\s*\([^)]{1,200}\)/g, severity: 'High', rule: 'Dynamic eval() or exec() Execution' },
+      ],
+      go: [
+        { re: /(?:Query|Exec|QueryRow)\s*\(\s*fmt\.Sprintf/g, severity: 'High', rule: 'SQL Injection via fmt.Sprintf Concatenation' },
+        { re: /unsafe\.Pointer/g, severity: 'Medium', rule: 'Unsafe Pointer Manipulation (Memory Safety Bypass)' },
+        { re: /exec\.Command\s*\(\s*["'](?:sh|bash|cmd)["']\s*,\s*["']-[a-zA-Z]["']/g, severity: 'High', rule: 'Shell Command Invocation with User Input Risk' },
+      ],
+      java: [
+        { re: /(?:executeQuery|executeUpdate|execute)\s*\([^)]*\+/g, severity: 'High', rule: 'SQL Injection via String Concatenation in Statement' },
+        { re: /new\s+ObjectInputStream/g, severity: 'High', rule: 'Insecure ObjectInputStream Deserialization (RCE Risk)' },
+        { re: /DocumentBuilderFactory\.newInstance\(\)/g, severity: 'Medium', rule: 'Potential XML External Entity (XXE) Vulnerability' },
+      ],
+      cs: [
+        { re: /new\s+SqlCommand\s*\([^)]*\+/g, severity: 'High', rule: 'SQL Injection via String Concatenation in SqlCommand' },
+        { re: /BinaryFormatter\.Deserialize/g, severity: 'High', rule: 'Insecure BinaryFormatter Deserialization' },
+      ],
+      cpp: [
+        { re: /\b(?:strcpy|gets|sprintf|strcat)\s*\(/g, severity: 'High', rule: 'Deprecated Insecure Buffer Function (Buffer Overflow Risk)' },
+      ],
+      rs: [
+        { re: /\bunsafe\s*\{/g, severity: 'Low', rule: 'Unsafe Block (Memory Safety Boundary Disengaged)' },
+      ],
+      php: [
+        { re: /(?:mysqli_query|PDO::query)\s*\([^)]*\$/g, severity: 'High', rule: 'SQL Injection via Unsanitized Variable in Query' },
+        { re: /\b(?:eval|passthru|shell_exec|system)\s*\(/g, severity: 'High', rule: 'Unsafe System Command / eval() Execution' },
+        { re: /\bunserialize\s*\(/g, severity: 'High', rule: 'Insecure unserialize() Deserialization' },
+        { re: /(?:include|require)(?:_once)?\s*\(?\s*\$_(?:GET|POST|REQUEST)/g, severity: 'High', rule: 'Remote/Local File Inclusion via Superglobal' },
+      ],
+      rb: [
+        { re: /\.where\s*\(\s*["'][^"']*#\{/g, severity: 'High', rule: 'SQL Injection via Ruby String Interpolation in where()' },
+        { re: /\b(?:eval|system)\s*\(/g, severity: 'High', rule: 'Unsafe Dynamic eval() or system() Execution' },
+      ],
+    };
+
     for (const file of this.files) {
       const ext = file.name.split('.').pop()?.toLowerCase();
-      if (!jsExts.has(ext)) continue;
-
       const content = file.content || '';
       const lines = content.split('\n');
 
-      for (const { re, severity, rule } of rules) {
+      // Check universal credential rules
+      for (const { re, severity, rule } of universalRules) {
         const re2 = new RegExp(re.source, re.flags.includes('g') ? re.flags : re.flags + 'g');
         let m;
         while ((m = re2.exec(content)) !== null) {
@@ -855,7 +1398,31 @@ class JsSecurityScanner {
           const snippet = (lines[lineNum - 1] || '').trim();
           if (snippet.startsWith('//') || snippet.startsWith('*') || snippet.startsWith('#')) continue;
           issues.push({ severity, rule, file: file.name, line: lineNum, snippet: snippet.slice(0, 80) });
-          if (issues.length >= 30) return issues;
+          if (issues.length >= 40) return issues;
+        }
+      }
+
+      // Check language-specific rules
+      let specific = [];
+      if (['js', 'jsx', 'ts', 'tsx', 'mjs', 'cjs'].includes(ext)) specific = langRules.js;
+      else if (ext === 'py') specific = langRules.py;
+      else if (ext === 'go') specific = langRules.go;
+      else if (ext === 'java' || ext === 'kt') specific = langRules.java;
+      else if (ext === 'cs') specific = langRules.cs;
+      else if (['c', 'cpp', 'cc', 'cxx', 'h', 'hpp'].includes(ext)) specific = langRules.cpp;
+      else if (ext === 'rs') specific = langRules.rs;
+      else if (ext === 'php') specific = langRules.php;
+      else if (ext === 'rb') specific = langRules.rb;
+
+      for (const { re, severity, rule } of specific) {
+        const re2 = new RegExp(re.source, re.flags.includes('g') ? re.flags : re.flags + 'g');
+        let m;
+        while ((m = re2.exec(content)) !== null) {
+          const lineNum = content.slice(0, m.index).split('\n').length;
+          const snippet = (lines[lineNum - 1] || '').trim();
+          if (snippet.startsWith('//') || snippet.startsWith('*') || snippet.startsWith('#')) continue;
+          issues.push({ severity, rule, file: file.name, line: lineNum, snippet: snippet.slice(0, 80) });
+          if (issues.length >= 40) return issues;
         }
       }
     }
@@ -863,6 +1430,7 @@ class JsSecurityScanner {
     return issues;
   }
 }
+const JsSecurityScanner = PolyglotSecurityScanner;
 
 // ─────────────────────────────────────────────
 // STAGE 6 — Mermaid Validator
@@ -962,9 +1530,32 @@ class ApiContractDriftScanner {
     const clientCalls = [];
 
     const backendPatterns = [
+      // Node.js
       { re: /(?:app|router)\.(get|post|put|delete|patch)\s*\(\s*['"]([^'"]+)['"]/gi, framework: 'Express.js' },
-      { re: /@(?:app|router)\.(get|post|put|delete|patch)\s*\(\s*['"]([^'"]+)['"]/gi, framework: 'FastAPI/Flask' },
       { re: /@(?:Get|Post|Put|Delete|Patch)\s*\(\s*['"]([^'"]+)['"]/gi, framework: 'NestJS' },
+      { re: /fastify\.(get|post|put|delete|patch)\s*\(\s*['"]([^'"]+)['"]/gi, framework: 'Fastify' },
+      // Python
+      { re: /@(?:app|router|api)\.(get|post|put|delete|patch)\s*\(\s*['"]([^'"]+)['"]/gi, framework: 'FastAPI/Flask' },
+      { re: /path\s*\(\s*['"]([^'"]+)['"]\s*,/gi, framework: 'Django' },
+      // Go
+      { re: /(?:r|router|app|api|group|v[0-9]+)\.(GET|POST|PUT|DELETE|PATCH)\s*\(\s*['"]([^'"]+)['"]/g, framework: 'Go (Gin/Echo/Fiber)' },
+      { re: /(?:r|router)\.(get|post|put|delete)\s*\(\s*['"]([^'"]+)['"]/gi, framework: 'Go Chi' },
+      { re: /http\.HandleFunc\s*\(\s*['"]([^'"]+)['"]/gi, framework: 'Go Standard HTTP' },
+      // Java / Kotlin
+      { re: /@(?:GetMapping|PostMapping|PutMapping|DeleteMapping|PatchMapping|RequestMapping)\s*\(\s*(?:(?:value|path)\s*=\s*)?['"]([^'"]+)['"]/gi, framework: 'Spring Boot' },
+      { re: /@Path\s*\(\s*['"]([^'"]+)['"]/gi, framework: 'JAX-RS' },
+      { re: /(?:get|post|put|delete)\s*\(\s*['"]([^'"]+)['"]\s*\)\s*\{/gi, framework: 'Ktor' },
+      // C# / .NET
+      { re: /\[(?:HttpGet|HttpPost|HttpPut|HttpDelete|HttpPatch|Route)\s*\(\s*['"]([^'"]+)['"]\)\]/gi, framework: 'ASP.NET Core' },
+      { re: /app\.Map(?:Get|Post|Put|Delete|Patch)\s*\(\s*['"]([^'"]+)['"]/gi, framework: 'ASP.NET Minimal API' },
+      // Rust
+      { re: /#\[(?:get|post|put|delete|patch)\s*\(\s*['"]([^'"]+)['"]\)\]/gi, framework: 'Rust Actix/Rocket' },
+      { re: /\.route\s*\(\s*['"]([^'"]+)['"]\s*,\s*(?:get|post|put|delete)/gi, framework: 'Rust Axum' },
+      // PHP
+      { re: /Route::(get|post|put|delete|patch)\s*\(\s*['"]([^'"]+)['"]/gi, framework: 'Laravel' },
+      { re: /#\[Route\s*\(\s*['"]([^'"]+)['"]/gi, framework: 'Symfony' },
+      // Ruby
+      { re: /^\s*(get|post|put|delete|patch)\s+['"]([^'"]+)['"]/gim, framework: 'Ruby on Rails' },
     ];
 
     const clientPatterns = [
