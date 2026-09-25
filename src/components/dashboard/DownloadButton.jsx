@@ -1,8 +1,9 @@
 // src/components/dashboard/DownloadButton.jsx
 import React, { useState } from 'react';
-import { Download, FileCode, FileText, Code2, ChevronDown } from 'lucide-react';
+import { Download, FileCode, FileText, Code2, ChevronDown, Sparkles, Bot } from 'lucide-react';
+import { generateRemediationSpec } from '../../utils/remediationSpecGenerator';
 
-export default function DownloadButton({ result, projectName = 'codebase' }) {
+export default function DownloadButton({ result, projectName = 'codebase', onOpenRemediationModal }) {
   const [open, setOpen] = useState(false);
   if (!result) return null;
 
@@ -17,6 +18,11 @@ export default function DownloadButton({ result, projectName = 'codebase' }) {
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
     setOpen(false);
+  };
+
+  const handleDownloadRemediationSpec = () => {
+    const content = generateRemediationSpec(result, { projectName });
+    downloadFile(content, `${projectName}-REFACTOR_SPEC.md`, 'text/markdown');
   };
 
   const handleDownloadMd = () => {
@@ -65,7 +71,7 @@ export default function DownloadButton({ result, projectName = 'codebase' }) {
   <title>CodeScanner Report - ${projectName}</title>
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0a0a0f; color: #f8fafc; padding: 40px; max-width: 900px; margin: 0 auto; }
-    h1 { color: #a855f7; border-b: 1px solid #1e293b; padding-bottom: 10px; }
+    h1 { color: #a855f7; border-bottom: 1px solid #1e293b; padding-bottom: 10px; }
     .card { background: #1e293b; border-radius: 12px; padding: 20px; margin-bottom: 20px; border: 1px solid #334155; }
     .grade { font-size: 48px; font-weight: 900; color: #10b981; }
     .stat { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #334155; }
@@ -103,22 +109,58 @@ export default function DownloadButton({ result, projectName = 'codebase' }) {
       >
         <Download className="w-3.5 h-3.5" />
         <span>Export Report</span>
-        <ChevronDown className="w-3.5 h-3.5 ml-1" />
+        <ChevronDown className="w-3.5 h-3.5 ml-0.5" />
       </button>
 
       {open && (
-        <div className="absolute right-0 mt-2 w-56 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-2xl py-1.5 z-30 text-xs font-medium space-y-0.5">
-          <button onClick={handleDownloadMd} className="w-full flex items-center gap-2 px-3.5 py-2 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200">
-            <FileText className="w-3.5 h-3.5 text-violet-500" />
-            Markdown Report (.md)
+        <div className="absolute right-0 mt-2 w-64 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-2xl p-1.5 z-30 text-xs font-medium space-y-1 animate-in fade-in zoom-in-95 duration-100">
+          {/* Priority AI Remediation Spec option */}
+          <button
+            onClick={() => {
+              setOpen(false);
+              onOpenRemediationModal?.();
+            }}
+            className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl bg-violet-500/10 hover:bg-violet-500/20 text-violet-700 dark:text-violet-300 font-semibold transition-colors"
+          >
+            <Sparkles className="w-4 h-4 text-violet-500 shrink-0" />
+            <div className="text-left">
+              <div>AI Remediation Spec (.md)</div>
+              <div className="text-[10px] text-violet-500/70 font-normal">Developer & LLM Prompt Spec</div>
+            </div>
           </button>
-          <button onClick={handleDownloadHtml} className="w-full flex items-center gap-2 px-3.5 py-2 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200">
-            <FileCode className="w-3.5 h-3.5 text-cyan-500" />
-            Interactive HTML (.html)
+
+          <button
+            onClick={handleDownloadRemediationSpec}
+            className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 transition-colors"
+          >
+            <Bot className="w-4 h-4 text-cyan-500 shrink-0" />
+            <span>Download REFACTOR_SPEC.md</span>
           </button>
-          <button onClick={handleDownloadJson} className="w-full flex items-center gap-2 px-3.5 py-2 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200">
-            <Code2 className="w-3.5 h-3.5 text-emerald-500" />
-            Raw Data Dump (.json)
+
+          <div className="h-px bg-slate-200 dark:bg-slate-800 my-1" />
+
+          <button
+            onClick={handleDownloadMd}
+            className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 transition-colors"
+          >
+            <FileText className="w-4 h-4 text-slate-400 shrink-0" />
+            <span>General Markdown Report (.md)</span>
+          </button>
+
+          <button
+            onClick={handleDownloadHtml}
+            className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 transition-colors"
+          >
+            <FileCode className="w-4 h-4 text-emerald-500 shrink-0" />
+            <span>Interactive HTML (.html)</span>
+          </button>
+
+          <button
+            onClick={handleDownloadJson}
+            className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 transition-colors"
+          >
+            <Code2 className="w-4 h-4 text-amber-500 shrink-0" />
+            <span>Raw Data Dump (.json)</span>
           </button>
         </div>
       )}

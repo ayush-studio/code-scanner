@@ -2,7 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import {
   ArrowLeft, ScanSearch, Network, Layers, GitBranch, Server,
-  ShieldAlert, Award, Copy, LayoutDashboard, Search, FileCode, Flame, Bug, AlertTriangle, Wifi
+  ShieldAlert, Award, Copy, LayoutDashboard, Search, FileCode, Flame, Bug, AlertTriangle, Wifi, Sparkles
 } from 'lucide-react';
 import useAnalysisStore from '../store/useAnalysisStore';
 import MetricsTable from '../components/dashboard/MetricsTable';
@@ -23,6 +23,7 @@ import GodFilesCard from '../components/dashboard/GodFilesCard';
 import CommentRatioCard from '../components/dashboard/CommentRatioCard';
 import ThemeToggle from '../components/ui/ThemeToggle';
 import SkeletonCard, { SkeletonDiagram } from '../components/ui/SkeletonCard';
+import RemediationModal from '../components/dashboard/RemediationModal';
 
 const SECTIONS = [
   { id: 'overview',     label: 'Overview & Health',      icon: LayoutDashboard },
@@ -45,6 +46,7 @@ export default function DashboardPage({ onBack }) {
   const [activeTab, setActiveTab] = useState('hld');
   const [selectedLineageFile, setSelectedLineageFile] = useState('');
   const [isPaletteOpen, setIsPaletteOpen] = useState(false);
+  const [isRemediationModalOpen, setIsRemediationModalOpen] = useState(false);
 
   const isAnalyzing = status === 'analyzing' || status === 'uploading' || status === 'fetching_git';
   const pythonAnalysis = result?.pythonAnalysis || {};
@@ -101,7 +103,23 @@ export default function DashboardPage({ onBack }) {
             <kbd className="px-1.5 py-0.5 rounded bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-[10px] font-mono text-slate-400">Ctrl K</kbd>
           </button>
 
-          {result && <DownloadButton result={result} />}
+          {result && (
+            <button
+              onClick={() => setIsRemediationModalOpen(true)}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white text-xs font-semibold shadow-sm shadow-violet-500/20 transition-all"
+              title="Open AI & Developer Remediation Spec"
+            >
+              <Sparkles className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">AI Fix Spec</span>
+            </button>
+          )}
+
+          {result && (
+            <DownloadButton
+              result={result}
+              onOpenRemediationModal={() => setIsRemediationModalOpen(true)}
+            />
+          )}
           <ThemeToggle />
           {result && (
             <div className="hidden sm:flex items-center gap-2 text-xs font-semibold text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2.5 py-1.5 rounded-full">
@@ -296,6 +314,14 @@ export default function DashboardPage({ onBack }) {
         onClose={() => setIsPaletteOpen(false)}
         result={result}
         onSelectSection={(sec) => setActiveSection(sec)}
+      />
+
+      {/* ── Actionable Remediation Spec & AI Prompt Modal ── */}
+      <RemediationModal
+        isOpen={isRemediationModalOpen}
+        onClose={() => setIsRemediationModalOpen(false)}
+        result={result}
+        projectName={result?.metrics?.primaryLanguage ? `${result.metrics.primaryLanguage.toLowerCase()}-project` : 'codebase'}
       />
     </div>
   );

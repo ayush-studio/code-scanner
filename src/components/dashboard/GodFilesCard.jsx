@@ -1,8 +1,9 @@
 // src/components/dashboard/GodFilesCard.jsx
-import React from 'react';
-import { Layers, CheckCircle, AlertTriangle, XCircle } from 'lucide-react';
+import React, { useState } from 'react';
+import { Layers, CheckCircle, AlertTriangle, XCircle, Sparkles, Check, Copy } from 'lucide-react';
 import Card, { CardHeader, CardBody } from '../ui/Card';
 import Badge from '../ui/Badge';
+import { generateSingleIssuePrompt } from '../../utils/remediationSpecGenerator';
 
 const SEV_CONFIG = {
   Critical: { icon: XCircle,     color: 'text-red-400',    bg: 'bg-red-500/10 border-red-500/20',    bar: 'bg-red-500',    badge: 'red' },
@@ -11,6 +12,8 @@ const SEV_CONFIG = {
 };
 
 export default function GodFilesCard({ largeFiles = [], onSelectFile }) {
+  const [copiedIdx, setCopiedIdx] = useState(null);
+
   if (!largeFiles || largeFiles.length === 0) {
     return (
       <Card>
@@ -29,6 +32,14 @@ export default function GodFilesCard({ largeFiles = [], onSelectFile }) {
   }
 
   const maxLoc = largeFiles[0]?.loc || 1;
+
+  const handleCopyPrompt = (e, item, idx) => {
+    e.stopPropagation();
+    const prompt = generateSingleIssuePrompt('god_file', item);
+    navigator.clipboard.writeText(prompt);
+    setCopiedIdx(idx);
+    setTimeout(() => setCopiedIdx(null), 2000);
+  };
 
   return (
     <Card glow className="overflow-hidden">
@@ -55,21 +66,30 @@ export default function GodFilesCard({ largeFiles = [], onSelectFile }) {
             const cfg = SEV_CONFIG[item.severity] || SEV_CONFIG.Moderate;
             const Icon = cfg.icon;
             const pct = Math.round((item.loc / maxLoc) * 100);
+            const isCopied = copiedIdx === idx;
 
             return (
               <div
                 key={idx}
                 onClick={() => onSelectFile?.(item.file)}
-                className={`p-3.5 rounded-xl border cursor-pointer transition-all hover:scale-[1.01] ${cfg.bg}`}
+                className={`p-3.5 rounded-xl border cursor-pointer transition-all hover:scale-[1.005] group ${cfg.bg}`}
               >
                 <div className="flex items-start justify-between gap-3 mb-2.5">
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 min-w-0">
                     <Icon className={`w-4 h-4 shrink-0 ${cfg.color}`} />
-                    <span className="text-xs font-mono font-bold text-slate-900 dark:text-white truncate max-w-[220px]" title={item.file}>
+                    <span className="text-xs font-mono font-bold text-slate-900 dark:text-white truncate max-w-[200px]" title={item.file}>
                       {item.shortName}
                     </span>
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      onClick={(e) => handleCopyPrompt(e, item, idx)}
+                      title="Copy AI Refactoring Prompt for this file"
+                      className="flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] font-semibold bg-white/80 dark:bg-slate-800 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700 hover:border-violet-500 transition-colors"
+                    >
+                      {isCopied ? <Check className="w-3 h-3 text-emerald-500" /> : <Sparkles className="w-3 h-3 text-violet-500" />}
+                      <span>{isCopied ? 'Copied' : 'AI Prompt'}</span>
+                    </button>
                     <Badge color={cfg.badge}>{item.severity}</Badge>
                     <span className="text-xs font-mono font-bold text-slate-600 dark:text-slate-300">
                       {item.loc.toLocaleString()} LOC

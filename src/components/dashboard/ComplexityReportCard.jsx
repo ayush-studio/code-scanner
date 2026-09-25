@@ -1,8 +1,9 @@
 // src/components/dashboard/ComplexityReportCard.jsx
 import React, { useState } from 'react';
-import { Zap, CheckCircle, ChevronDown, ChevronUp, ArrowUpDown } from 'lucide-react';
+import { Zap, CheckCircle, ChevronDown, ChevronUp, ArrowUpDown, Sparkles, Check } from 'lucide-react';
 import Card, { CardHeader, CardBody } from '../ui/Card';
 import Badge from '../ui/Badge';
+import { generateSingleIssuePrompt } from '../../utils/remediationSpecGenerator';
 
 const SEVERITY_CONFIG = {
   Critical: { color: 'red',    bar: 'bg-red-500',    text: 'text-red-400',    label: 'Critical' },
@@ -13,6 +14,7 @@ const SEVERITY_CONFIG = {
 
 export default function ComplexityReportCard({ complexityReport = {}, couplingData = {} }) {
   const [showAll, setShowAll] = useState(false);
+  const [copiedIdx, setCopiedIdx] = useState(null);
 
   const byFile = complexityReport?.byFile || [];
   const highCount = complexityReport?.highComplexityCount || 0;
@@ -40,6 +42,13 @@ export default function ComplexityReportCard({ complexityReport = {}, couplingDa
 
   // Merge coupling data
   const couplingByFile = new Map(couplingMap.map(c => [c.file, c]));
+
+  const handleCopyPrompt = (item, idx) => {
+    const prompt = generateSingleIssuePrompt('complexity', item);
+    navigator.clipboard.writeText(prompt);
+    setCopiedIdx(idx);
+    setTimeout(() => setCopiedIdx(null), 2000);
+  };
 
   return (
     <Card glow className="overflow-hidden">
@@ -85,14 +94,23 @@ export default function ComplexityReportCard({ complexityReport = {}, couplingDa
             const cfg = SEVERITY_CONFIG[item.severity] || SEVERITY_CONFIG.Low;
             const pct = Math.round((item.complexity / maxComplexity) * 100);
             const coupling = couplingByFile.get(item.file);
+            const isCopied = copiedIdx === idx;
 
             return (
               <div key={idx} className="group p-3 rounded-xl bg-slate-50/70 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700 transition-all">
                 <div className="flex items-center justify-between gap-3 mb-2">
-                  <span className="text-xs font-mono font-semibold text-slate-900 dark:text-white truncate max-w-[260px]" title={item.file}>
+                  <span className="text-xs font-mono font-semibold text-slate-900 dark:text-white truncate max-w-[240px]" title={item.file}>
                     {item.shortName}
                   </span>
                   <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      onClick={() => handleCopyPrompt(item, idx)}
+                      title="Copy AI Refactoring Prompt for this file"
+                      className="opacity-80 group-hover:opacity-100 flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700 hover:border-violet-500 transition-all"
+                    >
+                      {isCopied ? <Check className="w-3 h-3 text-emerald-500" /> : <Sparkles className="w-3 h-3 text-violet-500" />}
+                      <span>{isCopied ? 'Copied' : 'AI Prompt'}</span>
+                    </button>
                     {coupling?.coupled && (
                       <span className="text-[10px] text-orange-400 font-mono border border-orange-500/30 bg-orange-500/10 px-1.5 py-0.5 rounded">
                         High Coupling

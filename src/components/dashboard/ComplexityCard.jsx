@@ -1,8 +1,8 @@
-// src/components/dashboard/ComplexityCard.jsx
-import React from 'react';
-import { ShieldAlert, Cpu, AlertTriangle, CheckCircle2, Box, RefreshCcw, Bug, ArrowRight } from 'lucide-react';
+import React, { useState } from 'react';
+import { ShieldAlert, Cpu, AlertTriangle, CheckCircle2, Box, RefreshCcw, Bug, ArrowRight, Sparkles, Check } from 'lucide-react';
 import Card, { CardHeader, CardBody } from '../ui/Card';
 import Badge from '../ui/Badge';
+import { generateSingleIssuePrompt } from '../../utils/remediationSpecGenerator';
 
 export default function ComplexityCard({
   securityIssues = [],
@@ -11,6 +11,9 @@ export default function ComplexityCard({
   pythonAST = { classes: [], functions: [] },
   totalPythonFiles = 0
 }) {
+  const [copiedCircIdx, setCopiedCircIdx] = useState(null);
+  const [copiedSecIdx, setCopiedSecIdx] = useState(null);
+
   const classes = pythonAST?.classes || [];
   const functions = pythonAST?.functions || [];
 
@@ -60,23 +63,40 @@ export default function ComplexityCard({
             </div>
           </CardHeader>
           <CardBody className="!px-4 !py-4 space-y-2">
-            {circularDependencies.map((cycle, i) => (
-              <div
-                key={i}
-                className="p-3 rounded-xl border border-red-200 dark:border-red-900/50 bg-red-50/50 dark:bg-red-950/20 text-xs font-mono flex flex-col sm:flex-row sm:items-center justify-between gap-2"
-              >
-                <div className="flex items-center gap-1.5 flex-wrap font-bold text-red-700 dark:text-red-300">
-                  <span className="text-red-500 font-normal">Cycle #{i + 1}:</span>
-                  {cycle.chain.map((mod, mi) => (
-                    <React.Fragment key={mi}>
-                      <span>{mod}</span>
-                      {mi < cycle.chain.length - 1 && <ArrowRight className="w-3 h-3 text-red-400 inline shrink-0" />}
-                    </React.Fragment>
-                  ))}
-                </div>
-                <Badge color="red">{cycle.length} files in loop</Badge>
-              </div>
-            ))}
+              {circularDependencies.map((cycle, i) => {
+                const isCopied = copiedCircIdx === i;
+                return (
+                  <div
+                    key={i}
+                    className="p-3 rounded-xl border border-red-200 dark:border-red-900/50 bg-red-50/50 dark:bg-red-950/20 text-xs font-mono flex flex-col sm:flex-row sm:items-center justify-between gap-2"
+                  >
+                    <div className="flex items-center gap-1.5 flex-wrap font-bold text-red-700 dark:text-red-300">
+                      <span className="text-red-500 font-normal">Cycle #{i + 1}:</span>
+                      {cycle.chain.map((mod, mi) => (
+                        <React.Fragment key={mi}>
+                          <span>{mod}</span>
+                          {mi < cycle.chain.length - 1 && <ArrowRight className="w-3 h-3 text-red-400 inline shrink-0" />}
+                        </React.Fragment>
+                      ))}
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <button
+                        onClick={() => {
+                          const p = generateSingleIssuePrompt('circular_dep', cycle);
+                          navigator.clipboard.writeText(p);
+                          setCopiedCircIdx(i);
+                          setTimeout(() => setCopiedCircIdx(null), 2000);
+                        }}
+                        className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 border border-red-300 dark:border-red-900/80 hover:border-red-500 transition-colors"
+                      >
+                        {isCopied ? <Check className="w-3 h-3 text-emerald-500" /> : <Sparkles className="w-3 h-3 text-violet-500" />}
+                        <span>{isCopied ? 'Copied' : 'AI Prompt'}</span>
+                      </button>
+                      <Badge color="red">{cycle.length} files in loop</Badge>
+                    </div>
+                  </div>
+                );
+              })}
           </CardBody>
         </Card>
       )}
@@ -170,28 +190,45 @@ export default function ComplexityCard({
             </div>
           ) : (
             <div className="space-y-3 max-h-80 overflow-y-auto pr-1">
-              {securityIssues.map((issue, idx) => (
-                <div
-                  key={idx}
-                  className="p-3.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/50 space-y-1.5 transition-colors hover:border-amber-500/30"
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="font-bold text-slate-900 dark:text-white text-xs flex items-center gap-1.5">
-                      <AlertTriangle className="w-3.5 h-3.5 text-amber-500" />
-                      {issue.rule}
-                    </span>
-                    {getSeverityBadge(issue.severity)}
+              {securityIssues.map((issue, idx) => {
+                const isCopied = copiedSecIdx === idx;
+                return (
+                  <div
+                    key={idx}
+                    className="p-3.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/50 space-y-1.5 transition-colors hover:border-amber-500/30 group"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-bold text-slate-900 dark:text-white text-xs flex items-center gap-1.5">
+                        <AlertTriangle className="w-3.5 h-3.5 text-amber-500" />
+                        {issue.rule}
+                      </span>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => {
+                            const p = generateSingleIssuePrompt('security', issue);
+                            navigator.clipboard.writeText(p);
+                            setCopiedSecIdx(idx);
+                            setTimeout(() => setCopiedSecIdx(null), 2000);
+                          }}
+                          className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700 hover:border-amber-500 transition-colors"
+                        >
+                          {isCopied ? <Check className="w-3 h-3 text-emerald-500" /> : <Sparkles className="w-3 h-3 text-amber-500" />}
+                          <span>{isCopied ? 'Copied' : 'AI Prompt'}</span>
+                        </button>
+                        {getSeverityBadge(issue.severity)}
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-between text-[11px] font-mono text-slate-500 dark:text-slate-400">
+                      <span>{issue.file}{issue.line ? `:${issue.line}` : ''}</span>
+                    </div>
+                    {issue.snippet && (
+                      <pre className="mt-1 p-2 rounded bg-slate-100 dark:bg-slate-950 text-[11px] font-mono text-slate-700 dark:text-slate-300 overflow-x-auto border border-slate-200 dark:border-slate-800">
+                        {issue.snippet}
+                      </pre>
+                    )}
                   </div>
-                  <div className="flex items-center justify-between text-[11px] font-mono text-slate-500 dark:text-slate-400">
-                    <span>{issue.file}{issue.line ? `:${issue.line}` : ''}</span>
-                  </div>
-                  {issue.snippet && (
-                    <pre className="mt-1 p-2 rounded bg-slate-100 dark:bg-slate-950 text-[11px] font-mono text-slate-700 dark:text-slate-300 overflow-x-auto border border-slate-200 dark:border-slate-800">
-                      {issue.snippet}
-                    </pre>
-                  )}
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </CardBody>
